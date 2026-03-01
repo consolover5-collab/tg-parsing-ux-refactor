@@ -16,6 +16,7 @@ from aiogram.types import (
 )
 
 from bot.models import Config
+from bot.nlp import classify_user_input, expand_synonyms
 from db.database import Database
 
 logger = logging.getLogger(__name__)
@@ -79,15 +80,14 @@ async def _handle_chat_add(message: Message, fallback_text: str = "") -> bool:
 
     _cfg().monitoring.chats.append(chat_ref)
     _save_config()
-    if _bot_instance.userbot:
-        await message.answer(
-            f"✅ Чат {chat_ref} добавлен.\n"
-            "⚠️ Для применения перезапустите сервис на хосте kc:\n"
-            "<code>sudo systemctl restart tg-parsing</code>",
-            parse_mode="HTML",
-        )
-    else:
-        await message.answer(f"✅ Чат {chat_ref} добавлен.")
+    await message.answer(
+        f"✅ Чат {chat_ref} добавлен.\n"
+        "⚠️ Перезапустите бота, чтобы начать мониторинг:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="monitoring")],
+        ]),
+    )
     return True
 
 
@@ -167,10 +167,29 @@ def _dashboard_text() -> str:
     chats_count = len(_cfg().monitoring.chats)
     kw_count = len(_cfg().monitoring.keywords)
     price = _cfg().monitoring.max_price
-    price_str = f"💰 до {price:,}₽".replace(",", " ") if price else ""
+    price_str = f"💰 до {price:,}".replace(",", " ") if price else ""
     paused = _bot_instance and _bot_instance.userbot and _bot_instance.userbot.paused
-    status = "⏸ Пауза" if paused else "✅ Активен"
+    ub_connected = _bot_instance and _bot_instance.userbot and _bot_instance.userbot.client.is_connected()
+    if paused:
+        status = "⏸ Пауза"
+    elif ub_connected:
+        status = "✅ Активен"
+    else:
+        status = "⚠️ Userbot offline"
     return status, chats_count, kw_count, price_str
+
+
+async def _build_dashboard(stats: dict = None) -> str:
+    if not stats:
+        stats = await _db().get_stats()
+    status, chats_count, kw_count, price_str = _dashboard_text()
+    text = (
+        f"{status} | 📡 {chats_count} чат(ов) | 🔑 {kw_count} слов\n"
+        f"🔍 {stats['total_matches']} находок | ✉️ {stats['total_dms']} DM"
+    )
+    if price_str:
+        text += f" | {price_str}"
+    return text
 
 
 # ── /start ─────────────────────────────────────────────────────────
@@ -180,14 +199,7 @@ async def cmd_start(message: Message):
     if _bot_instance.owner_id is None:
         _bot_instance.owner_id = message.from_user.id
         await _db().set_setting("owner_id", str(message.from_user.id))
-    stats = await _db().get_stats()
-    status, chats_count, kw_count, price_str = _dashboard_text()
-    text = (
-        f"{status} | 📡 {chats_count} чат(ов) | 🔑 {kw_count} слов\n"
-        f"🔍 {stats['total_matches']} находок | ✉️ {stats['total_dms']} DM"
-    )
-    if price_str:
-        text += f" | {price_str}"
+    text = await _build_dashboard()
     await message.answer(text, reply_markup=main_menu_kb())
 
 
@@ -195,14 +207,7 @@ async def cmd_start(message: Message):
 
 @router.callback_query(F.data == "menu")
 async def cb_menu(callback: CallbackQuery):
-    stats = await _db().get_stats()
-    status, chats_count, kw_count, price_str = _dashboard_text()
-    text = (
-        f"{status} | 📡 {chats_count} чат(ов) | 🔑 {kw_count} слов\n"
-        f"🔍 {stats['total_matches']} находок | ✉️ {stats['total_dms']} DM"
-    )
-    if price_str:
-        text += f" | {price_str}"
+    text = await _build_dashboard()
     await callback.message.edit_text(text, reply_markup=main_menu_kb())
     await callback.answer()
 
@@ -243,7 +248,7 @@ async def cb_monitoring(callback: CallbackQuery):
     else:
         parts.append("🔑 Нет ключевых слов")
 
-    price_str = f"{price:,}₽".replace(",", " ") if price else "без ограничений"
+    price_str = f"{price:,}".replace(",", " ") if price else "без ограничений"
     parts.append(f"\n💰 Макс. цена: {price_str}")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -258,6 +263,10 @@ async def cb_monitoring(callback: CallbackQuery):
         [
             InlineKeyboardButton(text="🏷 Синонимы", callback_data="synonyms"),
             InlineKeyboardButton(text="💰 Цена", callback_data="max_price"),
+        ],
+        [
+            InlineKeyboardButton(text="📤 Экспорт слов", callback_data="kw_export"),
+            InlineKeyboardButton(text="📥 Импорт слов", callback_data="kw_import"),
         ],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu")],
     ])
@@ -418,7 +427,7 @@ async def cb_max_price(callback: CallbackQuery):
     price_str = f"{price:,}".replace(",", " ") if price else "не задана"
     _bot_instance.awaiting[callback.from_user.id] = "max_price"
     await callback.message.edit_text(
-        f"💰 Макс. цена: {price_str} ₽\nВведите новую максимальную цену (0 = без ограничений):",
+        f"💰 Макс. цена: {price_str}\nВведите новую максимальную цену (0 = без ограничений):",
         reply_markup=back_kb("monitoring"),
     )
     await callback.answer()
@@ -433,7 +442,7 @@ async def cb_history(callback: CallbackQuery):
         lines = []
         for r in rows:
             dup = "🔄" if r["is_duplicate"] else "🔔"
-            price_str = f"{r['price']:,}₽".replace(",", " ") if r.get("price") else "—"
+            price_str = f"{r['price']:,}".replace(",", " ") if r.get("price") else "—"
             lines.append(
                 f"{dup} {r['match_type']}({r.get('matched_value','')}) "
                 f"| {price_str} | {r['created_at'][-8:]}"
@@ -475,7 +484,7 @@ async def cb_recent(callback: CallbackQuery):
         lines = []
         for r in rows:
             dup = "🔄" if r["is_duplicate"] else "🔔"
-            price_str = f"{r['price']:,}₽".replace(",", " ") if r.get("price") else "—"
+            price_str = f"{r['price']:,}".replace(",", " ") if r.get("price") else "—"
             lines.append(
                 f"{dup} {r['match_type']}({r.get('matched_value','')}) "
                 f"| {price_str} | {r['created_at']}"
@@ -524,6 +533,7 @@ async def cb_settings(callback: CallbackQuery):
             InlineKeyboardButton(text="🔐 Авторизация", callback_data="auth_userbot"),
         ],
         [
+            InlineKeyboardButton(text="🧪 Тест pipeline", callback_data="test"),
             InlineKeyboardButton(text="🔄 Перезапуск", callback_data="restart_bot"),
         ],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu")],
@@ -638,7 +648,9 @@ async def cb_auth_userbot(callback: CallbackQuery):
             _bot_instance.awaiting[callback.from_user.id] = "auth_code"
             await callback.message.answer(
                 "⌛ Ссылка не подтверждена вовремя. Переключаю на ввод кода вручную.\n"
-                "Введите код из сообщения от аккаунта Telegram:"
+                "Введите код из сообщения от аккаунта Telegram:\n\n"
+                "⚠️ <b>Важно:</b> введите код <b>с пробелами</b>: <code>1 2 3 4 5</code>",
+                parse_mode="HTML",
             )
         else:
             await callback.message.answer("⌛ Время ожидания истекло. Нажмите «🔐 Авторизация» ещё раз.")
@@ -671,8 +683,10 @@ async def cb_auth_userbot_code(callback: CallbackQuery):
         "🔢 Введите код из сообщения от аккаунта Telegram.\n"
         "Код приходит в официальном Telegram (обычно не SMS).\n"
         "Ваше сообщение с кодом будет удалено после обработки.\n\n"
+        "⚠️ <b>Важно:</b> введите код <b>с пробелами</b>: <code>1 2 3 4 5</code>\n"
         "⚠️ Если у вас включена 2FA — временно отключите её перед авторизацией.",
         reply_markup=back_kb("settings"),
+        parse_mode="HTML",
     )
 
 
@@ -821,12 +835,12 @@ async def cb_lists(callback: CallbackQuery):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🚫 ➕", callback_data="opt_out_add"),
-            InlineKeyboardButton(text="🚫 ➖", callback_data="opt_out_del"),
+            InlineKeyboardButton(text="🚫 Добавить в ЧС", callback_data="opt_out_add"),
+            InlineKeyboardButton(text="🚫 Убрать из ЧС", callback_data="opt_out_del"),
         ],
         [
-            InlineKeyboardButton(text="✅ ➕", callback_data="no_dedup_add"),
-            InlineKeyboardButton(text="✅ ➖", callback_data="no_dedup_del"),
+            InlineKeyboardButton(text="✅ Добавить в БС", callback_data="no_dedup_add"),
+            InlineKeyboardButton(text="✅ Убрать из БС", callback_data="no_dedup_del"),
         ],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="settings")],
     ])
@@ -847,7 +861,7 @@ async def cb_no_dedup_list(callback: CallbackQuery):
 async def cb_opt_out_add(callback: CallbackQuery):
     _bot_instance.awaiting[callback.from_user.id] = "opt_out_add"
     await callback.message.edit_text(
-        "Введите user_id для добавления в чёрный список:",
+        "Введите user_id или @username для добавления в чёрный список:",
         reply_markup=back_kb("lists"),
     )
     await callback.answer()
@@ -872,7 +886,7 @@ async def cb_opt_out_del(callback: CallbackQuery):
 async def cb_no_dedup_add(callback: CallbackQuery):
     _bot_instance.awaiting[callback.from_user.id] = "no_dedup_add"
     await callback.message.edit_text(
-        "Введите user_id для добавления в белый список:",
+        "Введите user_id или @username для добавления в белый список:",
         reply_markup=back_kb("lists"),
     )
     await callback.answer()
@@ -922,19 +936,20 @@ async def cb_help(callback: CallbackQuery):
         "отправляет DM продавцу и уведомляет вас.\n\n"
 
         "<b>📡 Мониторинг</b>\n"
-        "Чаты, ключевые слова, синонимы и макс. цена — всё в одном разделе.\n"
-        "Чат можно добавить через <code>@username</code>, ID или пересылку сообщения.\n"
+        "Чаты, ключевые слова, синонимы и макс. цена.\n"
+        "Чат: <code>@username</code>, ID или пересылка сообщения.\n"
         "Синонимы расширяют поиск: «колонка» → акустика, speaker, JBL.\n"
-        "Совпадение по основе слова (стемминг): «колонку» = «колонка» = «колонки».\n\n"
+        "AI автоматически предлагает синонимы при добавлении слова.\n"
+        "📤 Экспорт / 📥 Импорт — массовое редактирование слов.\n"
+        "Стемминг: «колонку» = «колонка» = «колонки».\n\n"
 
         "<b>✉️ Авто-DM</b>\n"
-        "Шаблон сообщения с плейсхолдерами: "
-        "<code>{type}</code> <code>{price}</code> <code>{link}</code>\n"
-        "Задержка 60–120с имитирует живого человека.\n"
+        "Шаблон: <code>{type}</code> <code>{price}</code> <code>{link}</code>\n"
+        "Задержка имитирует живого человека.\n"
         "Повтор: через N часов одному продавцу можно написать снова.\n\n"
 
         "<b>📋 История</b>\n"
-        "Последние совпадения, лог DM, тест pipeline (текст или фото).\n\n"
+        "Последние совпадения и лог DM.\n\n"
 
         "<b>⚙️ Настройки</b>\n"
     )
@@ -948,8 +963,15 @@ async def cb_help(callback: CallbackQuery):
         "🧪 Dry-run — тестовый режим без реальных DM\n"
         "📊 Лимиты — квоты DM/Vision/NLP\n"
         "👥 Списки — чёрный (не писать) и белый (игнор cooldown)\n"
-        "🔐 Авторизация — вход по QR-коду или SMS-коду\n"
-        "🔄 Перезапуск — мягкий SIGTERM, systemd перезапустит сервис"
+        "  → Принимают <code>@username</code> и числовой user_id\n"
+        "🔐 Авторизация — вход по QR-коду\n"
+        "🧪 Тест pipeline — проверка текста/фото без отправки\n"
+        "🔄 Перезапуск — мягкий перезапуск сервиса\n\n"
+
+        "<b>💡 Подсказки</b>\n"
+        "• Просто напишите название товара — бот добавит его в мониторинг\n"
+        "• Перешлите сообщение из чата — бот добавит чат\n"
+        "• Короткие сообщения (ок, да, нет) бот игнорирует"
     )
     await callback.message.edit_text(text, reply_markup=back_kb("menu"), parse_mode="HTML")
     await callback.answer()
@@ -1057,26 +1079,230 @@ async def cb_edit_nlp_limit(callback: CallbackQuery):
     await callback.answer()
 
 
+# ── AI helpers ────────────────────────────────────────────────────
+
+async def _propose_keyword(message: Message, kw: str, synonyms: list, is_new: bool = True) -> None:
+    """Expand synonyms via Groq then ask user to confirm/edit/cancel."""
+    cfg = _cfg()
+    all_synonyms = list(synonyms)
+    if cfg.vision.api_key:
+        await message.answer("🤔 Расширяю синонимы через AI...")
+        extra = await expand_synonyms(kw, all_synonyms, cfg)
+        all_synonyms = all_synonyms + [s for s in extra if s not in all_synonyms]
+    _bot_instance.pending_kw[message.from_user.id] = {
+        "kw": kw, "synonyms": all_synonyms, "is_new": is_new,
+    }
+    syns_str = "\n".join(f"  • {s}" for s in all_synonyms) if all_synonyms else "  —"
+    label = "Новый товар" if is_new else "Синонимы для"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Сохранить", callback_data="kw_confirm"),
+         InlineKeyboardButton(text="❌ Отменить", callback_data="kw_decline")],
+        [InlineKeyboardButton(text="✏️ Редактировать", callback_data="kw_edit")],
+    ])
+    await message.answer(
+        f"<b>{label}: {kw}</b>\n\nСинонимы:\n{syns_str}\n\nСохранить?",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data == "kw_confirm")
+async def cb_kw_confirm(callback: CallbackQuery):
+    pending = _bot_instance.pending_kw.pop(callback.from_user.id, None)
+    if not pending:
+        await callback.answer("Нечего сохранять", show_alert=True)
+        return
+    await callback.answer()
+    kw, synonyms, is_new = pending["kw"], pending["synonyms"], pending.get("is_new", True)
+    cfg = _cfg()
+    kmap = cfg.rules.keyword_map
+    if kw not in kmap:
+        kmap[kw] = synonyms or [kw]
+    else:
+        for s in synonyms:
+            if s not in kmap[kw]:
+                kmap[kw].append(s)
+    if is_new and kw not in cfg.monitoring.keywords:
+        cfg.monitoring.keywords.append(kw)
+    _save_config()
+    if _bot_instance.userbot:
+        _bot_instance.userbot.matcher.update(cfg.monitoring.keywords, keyword_map=cfg.rules.keyword_map)
+    await callback.message.edit_text(f"✅ Сохранено: <b>{kw}</b>", parse_mode="HTML")
+
+
+@router.callback_query(F.data == "kw_decline")
+async def cb_kw_decline(callback: CallbackQuery):
+    _bot_instance.pending_kw.pop(callback.from_user.id, None)
+    await callback.answer()
+    await callback.message.edit_text("❌ Добавление отменено.")
+
+
+@router.callback_query(F.data == "kw_edit")
+async def cb_kw_edit(callback: CallbackQuery):
+    pending = _bot_instance.pending_kw.get(callback.from_user.id)
+    if not pending:
+        await callback.answer("Нечего редактировать", show_alert=True)
+        return
+    await callback.answer()
+    syns_str = ", ".join(pending["synonyms"]) if pending["synonyms"] else ""
+    _bot_instance.awaiting[callback.from_user.id] = "kw_edit"
+    await callback.message.answer(
+        f"✏️ Отредактируйте синонимы для <b>{pending['kw']}</b> (через запятую):\n\n"
+        f"<code>{syns_str}</code>",
+        parse_mode="HTML",
+    )
+
+
+async def _smart_handle(message: Message, text: str) -> None:
+    """Handle free-form text with no awaiting state via Groq classification."""
+    if not text or not _bot_instance or not _cfg():
+        return
+    # Skip very short or trivial messages to avoid wasting Groq API credits
+    _TRIVIAL = {"ок", "ok", "да", "нет", "нет", "спасибо", "привет", "хорошо", "ладно", "понял", "👍", "👌", "🙏"}
+    if len(text) < 4 or text.lower() in _TRIVIAL:
+        return
+    cfg = _cfg()
+    if not cfg.vision.api_key:
+        await message.answer(
+            "💡 Не знаю что с этим делать.\n"
+            "Используйте кнопки меню или /start для навигации.",
+        )
+        return
+    await message.answer("🤔 Анализирую...")
+    result = await classify_user_input(text, cfg)
+    kind = result.get("type", "unknown")
+    if kind == "chat":
+        value = (result.get("value") or "").strip()
+        m = re.search(r"t\.me/([A-Za-z0-9_]+)", value)
+        if m:
+            value = f"@{m.group(1)}"
+        if not value.startswith("@"):
+            value = f"@{value.lstrip('@')}"
+        if value in cfg.monitoring.chats:
+            await message.answer(f"ℹ️ Чат {value} уже в списке мониторинга.")
+            return
+        cfg.monitoring.chats.append(value)
+        _save_config()
+        await message.answer(
+            f"✅ Добавил <b>{value}</b> в мониторинг.\nПерезапустите сервис:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot"),
+            ]]),
+        )
+    elif kind == "keyword":
+        kw = (result.get("value") or "").strip().lower()
+        synonyms = [s.strip() for s in (result.get("synonyms") or []) if s.strip()]
+        if not kw:
+            await message.answer("❓ Не удалось определить ключевое слово. Попробуйте точнее.")
+            return
+        is_new = kw not in cfg.monitoring.keywords
+        await _propose_keyword(message, kw, synonyms, is_new=is_new)
+    else:
+        await message.answer(
+            "❓ Не понял что с этим делать.\n\n"
+            "Я понимаю:\n"
+            "• <b>@username</b> или ссылку на Telegram-чат → добавлю в мониторинг\n"
+            "• <b>Название товара</b> (колонка, телевизор…) → добавлю в ключевые слова\n\n"
+            "Или используйте кнопки меню.",
+            parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data == "kw_export")
+async def cb_kw_export(callback: CallbackQuery):
+    await callback.answer()
+    cfg = _cfg()
+    kmap = cfg.rules.keyword_map
+    kws = cfg.monitoring.keywords
+    if not kws:
+        await callback.message.answer("Нет ключевых слов для экспорта.")
+        return
+    lines = []
+    for kw in kws:
+        syns = kmap.get(kw)
+        if isinstance(syns, list) and syns:
+            lines.append(f"{kw}: {', '.join(syns)}")
+        else:
+            lines.append(kw)
+    export_text = "\n".join(lines)
+    await callback.message.answer(
+        "📤 <b>Экспорт ключевых слов</b>\n\n"
+        "Формат: <code>слово: синоним1, синоним2, ...</code>\n"
+        "Отредактируйте и импортируйте обратно кнопкой 📥\n\n"
+        "<code>" + export_text + "</code>",
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "kw_import")
+async def cb_kw_import(callback: CallbackQuery):
+    await callback.answer()
+    _bot_instance.awaiting[callback.from_user.id] = "kw_import"
+    await callback.message.answer(
+        "📥 <b>Импорт ключевых слов</b>\n\n"
+        "Вставьте список в формате:\n"
+        "<code>слово: синоним1, синоним2, ...</code>\n\n"
+        "Каждое слово — новая строка. "
+        "Существующие слова будут <b>заменены</b>, новые — добавлены.",
+        parse_mode="HTML",
+    )
+
+
 # ── Text input handler ─────────────────────────────────────────────
 
 @router.message(F.forward_origin | F.forward_from_chat)
 async def handle_forwarded_input(message: Message):
     action = _bot_instance.awaiting.get(message.from_user.id)
-    if action != "chat_add":
+    if action == "chat_add":
+        _bot_instance.awaiting.pop(message.from_user.id, None)
+        text = (message.text or message.caption or "").strip()
+        ok = await _handle_chat_add(message, fallback_text=text)
+        if not ok:
+            _bot_instance.awaiting[message.from_user.id] = "chat_add"
+            return
+        await message.answer("Главное меню:", reply_markup=main_menu_kb())
         return
-    _bot_instance.awaiting.pop(message.from_user.id, None)
-    text = (message.text or message.caption or "").strip()
-    ok = await _handle_chat_add(message, fallback_text=text)
-    if not ok:
-        _bot_instance.awaiting[message.from_user.id] = "chat_add"
+    if action:
         return
-    await message.answer("Главное меню:", reply_markup=main_menu_kb())
+    chat_ref = _extract_chat_ref_from_message(message)
+    if chat_ref:
+        if chat_ref in _cfg().monitoring.chats:
+            await message.answer(f"ℹ️ Чат {chat_ref} уже в списке мониторинга.")
+            return
+        _cfg().monitoring.chats.append(chat_ref)
+        _save_config()
+        await message.answer(
+            f"✅ Добавил <b>{chat_ref}</b> в мониторинг.\nПерезапустите сервис:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot"),
+            ]]),
+        )
+    else:
+        text = (message.text or message.caption or "").strip()
+        if text:
+            await message.answer(
+                "❓ Не могу определить источник форварда (скрыт автором).\n\n"
+                "Что вы хотите сделать?\n"
+                "• Чтобы добавить <b>чат</b> — введите @username вручную\n"
+                "• Чтобы добавить <b>товар</b> — нажмите ➕ Слово в Мониторинге",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📡 Мониторинг", callback_data="monitoring")],
+                ]),
+            )
+        else:
+            await message.answer(
+                "❓ Не могу определить источник этого форварда. Введите @username чата вручную."
+            )
 
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_text_input(message: Message):
     action = _bot_instance.awaiting.pop(message.from_user.id, None)
     if not action:
+        await _smart_handle(message, (message.text or "").strip())
         return
 
     text = (message.text or message.caption or "").strip()
@@ -1097,23 +1323,76 @@ async def handle_text_input(message: Message):
             idx = int(text) - 1
             removed = _cfg().monitoring.chats.pop(idx)
             _save_config()
-            await message.answer(f"✅ Чат {removed} удалён.")
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot")],
-            ])
-            await message.answer("⚠️ Для применения перезапустите бота:", reply_markup=kb)
+            await message.answer(
+                f"✅ Чат {removed} удалён.\n⚠️ Перезапустите бота для применения:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot")],
+                    [InlineKeyboardButton(text="◀️ В мониторинг", callback_data="monitoring")],
+                ]),
+            )
         except (ValueError, IndexError):
             await message.answer("❌ Неверный номер.")
+        return
 
-    elif action == "kw_add":
-        _cfg().monitoring.keywords.append(text)
+    elif action == "kw_edit":
+        pending = _bot_instance.pending_kw.get(message.from_user.id)
+        if not pending:
+            await message.answer("❌ Сессия устарела, начните заново.")
+        else:
+            new_syns = [s.strip() for s in text.split(",") if s.strip()]
+            pending["synonyms"] = new_syns
+            syns_str = "\n".join(f"  • {s}" for s in new_syns) if new_syns else "  —"
+            label = "Новый товар" if pending.get("is_new") else "Синонимы для"
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Сохранить", callback_data="kw_confirm"),
+                 InlineKeyboardButton(text="❌ Отменить", callback_data="kw_decline")],
+                [InlineKeyboardButton(text="✏️ Редактировать", callback_data="kw_edit")],
+            ])
+            await message.answer(
+                f"<b>{label}: {pending['kw']}</b>\n\nСинонимы:\n{syns_str}\n\nСохранить?",
+                parse_mode="HTML", reply_markup=kb,
+            )
+        return
+
+    elif action == "kw_import":
+        lines_in = [l.strip() for l in text.strip().splitlines() if l.strip()]
+        added, updated = [], []
+        cfg = _cfg()
+        for line in lines_in:
+            if ":" in line:
+                kw, _, rest = line.partition(":")
+                kw = kw.strip().lower()
+                syns = [s.strip() for s in rest.split(",") if s.strip()]
+            else:
+                kw = line.strip().lower()
+                syns = [kw]
+            if not kw:
+                continue
+            is_new = kw not in cfg.monitoring.keywords
+            cfg.rules.keyword_map[kw] = syns
+            if is_new:
+                cfg.monitoring.keywords.append(kw)
+                added.append(kw)
+            else:
+                updated.append(kw)
         _save_config()
         if _bot_instance.userbot:
             _bot_instance.userbot.matcher.update(
-                _cfg().monitoring.keywords,
-                keyword_map=_cfg().rules.keyword_map,
+                cfg.monitoring.keywords, keyword_map=cfg.rules.keyword_map
             )
-        await message.answer(f"✅ Ключевое слово «{text}» добавлено.")
+        parts = []
+        if added:
+            parts.append(f"✅ Добавлено: {len(added)}")
+        if updated:
+            parts.append(f"🔄 Обновлено: {len(updated)}")
+        await message.answer("\n".join(parts) or "Ничего не импортировано.")
+        return
+
+    elif action == "kw_add":
+        kw = text.strip().lower()
+        is_new = kw not in _cfg().monitoring.keywords
+        await _propose_keyword(message, kw, [kw], is_new=is_new)
+        return
 
     elif action == "kw_del":
         try:
@@ -1128,15 +1407,17 @@ async def handle_text_input(message: Message):
             await message.answer(f"✅ Слово «{removed}» удалено.")
         except (ValueError, IndexError):
             await message.answer("❌ Неверный номер.")
+        return
 
     elif action == "max_price":
         try:
             new_price = int(text.replace(" ", "").replace("₽", "").replace("р", ""))
             _cfg().monitoring.max_price = new_price
             _save_config()
-            await message.answer(f"✅ Макс. цена: {new_price:,} ₽".replace(",", " "))
+            await message.answer(f"✅ Макс. цена: {new_price:,}".replace(",", " "))
         except ValueError:
             await message.answer("❌ Введите число.")
+        return
 
     elif action == "set_notify":
         if text.lower() == "me":
@@ -1148,6 +1429,7 @@ async def handle_text_input(message: Message):
                 _cfg().actions.notify_chat_id = text
         _save_config()
         await message.answer(f"✅ Уведомления: {_cfg().actions.notify_chat_id}")
+        return
 
     elif action == "auth_code":
         if not _bot_instance.userbot:
@@ -1210,27 +1492,39 @@ async def handle_text_input(message: Message):
         _cfg().actions.dm_template = text
         _save_config()
         await message.answer(f"✅ Шаблон DM обновлён:\n{text}")
+        return
 
     elif action == "opt_out_add":
-        try:
-            user_id = int(text)
-            if user_id not in _cfg().rules.opt_out_list:
-                _cfg().rules.opt_out_list.append(user_id)
+        entry = text.strip()
+        if entry.startswith("@"):
+            if entry not in _cfg().rules.opt_out_list:
+                _cfg().rules.opt_out_list.append(entry)
                 _save_config()
-                await message.answer(f"✅ User {user_id} добавлен в opt-out")
+                await message.answer(f"✅ {entry} добавлен в чёрный список")
             else:
-                await message.answer(f"⚠️ User {user_id} уже в списке")
-        except ValueError:
-            await message.answer("❌ Введите число (user_id)")
+                await message.answer(f"⚠️ {entry} уже в списке")
+        else:
+            try:
+                user_id = int(entry)
+                if user_id not in _cfg().rules.opt_out_list:
+                    _cfg().rules.opt_out_list.append(user_id)
+                    _save_config()
+                    await message.answer(f"✅ User {user_id} добавлен в чёрный список")
+                else:
+                    await message.answer(f"⚠️ User {user_id} уже в списке")
+            except ValueError:
+                await message.answer("❌ Введите user_id (число) или @username")
+        return
 
     elif action == "opt_out_del":
         try:
             idx = int(text) - 1
             removed = _cfg().rules.opt_out_list.pop(idx)
             _save_config()
-            await message.answer(f"✅ User {removed} удалён из opt-out")
+            await message.answer(f"✅ {removed} удалён из чёрного списка")
         except (ValueError, IndexError):
             await message.answer("❌ Неверный номер.")
+        return
 
     elif action == "set_dm_delay":
         parts = text.split()
@@ -1244,6 +1538,7 @@ async def handle_text_input(message: Message):
             await message.answer(f"✅ Задержка: {mn}–{mx} с")
         except (ValueError, IndexError):
             await message.answer("❌ Формат: МИН МАКС (числа, например: 60 120)")
+        return
 
     elif action == "set_dm_cooldown":
         try:
@@ -1256,45 +1551,49 @@ async def handle_text_input(message: Message):
             await message.answer(f"✅ Повтор DM через: {label}")
         except ValueError:
             await message.answer("❌ Введите целое число часов (0 = никогда)")
+        return
 
     elif action == "no_dedup_add":
-        try:
-            user_id = int(text)
+        entry = text.strip()
+        if entry.startswith("@"):
             ids = _cfg().actions.no_dedup_ids
-            if user_id not in ids:
-                ids.append(user_id)
+            if entry not in ids:
+                ids.append(entry)
                 _save_config()
-                await message.answer(f"✅ User {user_id} добавлен (без дедупа)")
+                await message.answer(f"✅ {entry} добавлен в белый список")
             else:
-                await message.answer(f"⚠️ User {user_id} уже в списке")
-        except ValueError:
-            await message.answer("❌ Введите число (user_id)")
+                await message.answer(f"⚠️ {entry} уже в списке")
+        else:
+            try:
+                user_id = int(entry)
+                ids = _cfg().actions.no_dedup_ids
+                if user_id not in ids:
+                    ids.append(user_id)
+                    _save_config()
+                    await message.answer(f"✅ User {user_id} добавлен в белый список")
+                else:
+                    await message.answer(f"⚠️ User {user_id} уже в списке")
+            except ValueError:
+                await message.answer("❌ Введите user_id (число) или @username")
+        return
 
     elif action == "no_dedup_del":
         try:
             idx = int(text) - 1
             removed = _cfg().actions.no_dedup_ids.pop(idx)
             _save_config()
-            await message.answer(f"✅ User {removed} удалён из белого списка")
+            await message.answer(f"✅ {removed} удалён из белого списка")
         except (ValueError, IndexError):
             await message.answer("❌ Неверный номер.")
+        return
 
     elif action.startswith("syn_add:"):
         kw = action.split(":", 1)[1]
-        kmap = _cfg().rules.keyword_map
-        if kw not in kmap:
-            kmap[kw] = []
+        existing = list(_cfg().rules.keyword_map.get(kw, []))
         new_syns = [s.strip() for s in text.split(",") if s.strip()]
-        for s in new_syns:
-            if s not in kmap[kw]:
-                kmap[kw].append(s)
-        _save_config()
-        if _bot_instance.userbot:
-            _bot_instance.userbot.matcher.update(
-                _cfg().monitoring.keywords,
-                keyword_map=_cfg().rules.keyword_map,
-            )
-        await message.answer(f"✅ Добавлено {len(new_syns)} синонимов для «{kw}»")
+        merged = existing + [s for s in new_syns if s not in existing]
+        await _propose_keyword(message, kw, merged, is_new=False)
+        return
 
     elif action.startswith("syn_del:"):
         kw = action.split(":", 1)[1]
@@ -1312,6 +1611,7 @@ async def handle_text_input(message: Message):
             await message.answer(f"✅ Синоним «{removed}» удалён из «{kw}»")
         except (ValueError, IndexError):
             await message.answer("❌ Неверный номер.")
+        return
 
     elif action == "edit_dm_limit":
         try:
@@ -1323,6 +1623,7 @@ async def handle_text_input(message: Message):
             await message.answer(f"✅ Лимит DM: {val}/час")
         except ValueError:
             await message.answer("❌ Введите положительное число")
+        return
 
     elif action == "edit_vision_limit":
         try:
@@ -1334,6 +1635,7 @@ async def handle_text_input(message: Message):
             await message.answer(f"✅ Лимит Vision: {val}/мин")
         except ValueError:
             await message.answer("❌ Введите положительное число")
+        return
 
     elif action == "edit_nlp_limit":
         try:
@@ -1345,6 +1647,7 @@ async def handle_text_input(message: Message):
             await message.answer(f"✅ Лимит NLP: {val}/мин")
         except ValueError:
             await message.answer("❌ Введите положительное число")
+        return
 
     await message.answer("Главное меню:", reply_markup=main_menu_kb())
 
@@ -1409,6 +1712,7 @@ class ControlBot:
         self.db = db
         self.userbot = None  # set externally after init
         self.awaiting: dict[int, str] = {}  # user_id -> action
+        self.pending_kw: dict[int, dict] = {}  # user_id -> {kw, synonyms, is_new}
         self.owner_id: int | None = None   # set on first /start
         self.dm_limiter = dm_limiter
         self.vision_limiter = vision_limiter
@@ -1443,6 +1747,13 @@ class ControlBot:
         if saved:
             self.owner_id = int(saved)
             logger.info("Loaded owner_id=%s from DB", saved)
+            try:
+                await self.bot.send_message(
+                    self.owner_id,
+                    "✅ Бот перезапущен и готов к работе.\nНажмите /start для меню.",
+                )
+            except Exception:
+                pass
         await self.dp.start_polling(self.bot, handle_signals=False)
 
     async def stop(self):

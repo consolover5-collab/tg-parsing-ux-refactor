@@ -65,12 +65,20 @@ class MessageProcessor:
 
         return base
 
-    def should_process_user(self, user_id: int) -> bool:
-        """Check if user is not in opt-out list."""
-        return user_id not in self.config.rules.opt_out_list
+    def should_process_user(self, user_id: int, username=None) -> bool:
+        """Check if user is not in opt-out list (by id or @username)."""
+        opt_out = self.config.rules.opt_out_list
+        if user_id in opt_out:
+            return False
+        if username:
+            un = username.lstrip('@').lower()
+            for entry in opt_out:
+                if isinstance(entry, str) and entry.lstrip('@').lower() == un:
+                    return False
+        return True
 
     def decide_actions(
-        self, chat_external: str, user_id: int, meta: dict
+        self, chat_external: str, user_id: int, meta: dict, username=None
     ) -> dict:
         """Decide which actions to take based on config and meta.
 
@@ -90,7 +98,7 @@ class MessageProcessor:
         }
 
         # Check opt-out
-        if not self.should_process_user(user_id):
+        if not self.should_process_user(user_id, username):
             result["reason"] = "user in opt-out list"
             return result
 

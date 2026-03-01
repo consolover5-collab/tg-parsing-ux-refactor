@@ -42,7 +42,7 @@ class RulesConfig(BaseModel):
     keyword_map: dict[str, str | list[str]] = Field(default_factory=dict)
     vision_enabled: bool = True
     per_chat_overrides: dict[str, PerChatOverride] = Field(default_factory=dict)
-    opt_out_list: list[int] = Field(default_factory=list)
+    opt_out_list: list[int | str] = Field(default_factory=list)
 
 
 class ActionsConfig(BaseModel):
@@ -55,7 +55,7 @@ class ActionsConfig(BaseModel):
     dm_delay_min: int = 60
     dm_delay_max: int = 120
     dm_cooldown_hours: int = 25
-    no_dedup_ids: list[int] = Field(default_factory=list)
+    no_dedup_ids: list[int | str] = Field(default_factory=list)
     use_groq_dm: bool = False
 
 

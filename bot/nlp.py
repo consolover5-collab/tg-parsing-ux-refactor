@@ -111,18 +111,21 @@ async def generate_dm(
     listing_text: str,
     item_type: str,
     config,
+    price: int | None = None,
 ) -> str | None:
     """Generate a personalised DM for a keyword-matched listing (no NLP step).
 
     Returns DM text string or None on failure.
     """
+    price_str = str(price) if price else "не указана"
     system = (
-        "Ты — покупатель на барахолке. Напиши 1-2 предложения продавцу: "
-        "уточни, актуально ли его объявление и можно ли договориться о цене. "
+        "Ты — покупатель на барахолке. Напиши 1-2 предложения продавцу. "
+        "Обязательно упомяни название товара. Спроси, актуально ли объявление. "
+        "Если цена указана — спроси, можно ли немного скинуть. "
         "Пиши естественно, как обычный человек. Без приветствий типа 'Здравствуйте'. "
         "Отвечай только текстом DM, без JSON, без кавычек."
     )
-    user = f"Тип товара: {item_type}.\nТекст объявления:\n{listing_text[:600]}"
+    user = f"Товар: {item_type}.\nЦена: {price_str}.\nТекст объявления:\n{listing_text[:600]}"
 
     payload = {
         "model": config.vision.model,
@@ -152,3 +155,94 @@ async def generate_dm(
     except Exception as e:
         logger.error("Groq DM generation failed: %s", e)
         return None
+
+
+async def classify_user_input(text: str, config) -> dict:
+    """Classify free-form user input as a Telegram chat ref or a keyword/product.
+
+    Returns:
+        {"type": "chat", "value": "@username_or_link"}
+        {"type": "keyword", "value": "main_keyword", "synonyms": [...]}
+        {"type": "unknown"}
+    """
+    system = (
+        "Ты — ассистент настройки Telegram-мониторинга. "
+        "Пользователь прислал текст. Определи что это:\n"
+        "1. \'chat\' — Telegram-группа или канал (есть @username, t.me/, или это явно название канала)\n"
+        "2. \'keyword\' — название товара или категории для поиска (телевизор, колонка, ноутбук, велосипед и т.п.)\n"
+        "3. \'unknown\' — ни то ни другое\n\n"
+        "Ответь строго в JSON (без markdown, без пояснений):\n"
+        "Для чата: {\"type\": \"chat\", \"value\": \"@username_или_ссылка\"}\n"
+        "Для товара: {\"type\": \"keyword\", \"value\": \"основное_слово_в_им.п.\", "
+        "\"synonyms\": [\"синоним1\", \"синоним2\"]}\n"
+        "Для неизвестного: {\"type\": \"unknown\"}"
+    )
+    payload = {
+        "model": config.vision.model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": text[:300]},
+        ],
+        "max_tokens": 150,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+    }
+    headers = {
+        "Authorization": f"Bearer {config.vision.api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                config.vision.base_url,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    return {"type": "unknown"}
+                data = await resp.json()
+        raw = data["choices"][0]["message"]["content"].strip()
+        result = json.loads(raw)
+        return result if isinstance(result, dict) and "type" in result else {"type": "unknown"}
+    except Exception as e:
+        logger.error("classify_user_input failed: %s", e)
+        return {"type": "unknown"}
+
+async def expand_synonyms(keyword: str, existing: list, config) -> list:
+    """Ask Groq to expand synonyms for a keyword. Returns only new (non-duplicate) items."""
+    existing_str = ", ".join(existing) if existing else "нет"
+    system = (
+        "Ты помогаешь настроить поиск объявлений на Telegram-барахолках. "
+        "Дано ключевое слово и уже известные синонимы. "
+        "Предложи дополнительные синонимы: варианты написания, сленг, аббревиатуры, транслит, английские аналоги. "
+        "Верни JSON: {\"synonyms\": [\"слово1\", \"слово2\", ...]} "
+        "— только новые слова, без дублей с уже существующими. "
+        "Если добавить нечего — {\"synonyms\": []}."
+    )
+    user = f"Товар: {keyword}\nУже есть: {existing_str}"
+    payload = {
+        "model": config.vision.model,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "max_tokens": 150,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+    }
+    headers = {"Authorization": f"Bearer {config.vision.api_key}", "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                config.vision.base_url, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+        raw = data["choices"][0]["message"]["content"].strip()
+        result = json.loads(raw)
+        new_syns = result.get("synonyms", [])
+        existing_lower = {s.lower() for s in existing}
+        return [s for s in new_syns if s.strip() and s.lower() not in existing_lower]
+    except Exception as e:
+        logger.error("expand_synonyms failed: %s", e)
+        return []

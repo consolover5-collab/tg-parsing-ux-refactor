@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import random
+import time
 
 from telethon import TelegramClient, events
 from telethon.errors import (
@@ -65,6 +66,9 @@ class Userbot:
         self._started = False
         self._pending_qr_login = None
         self._phone_code_hash: str | None = None
+        self._phone_code_requested_at: float | None = None
+        self._last_code_delivery: str | None = None
+        self._last_code_timeout: int | None = None
 
     async def start(self) -> bool:
         if self._started:
@@ -123,36 +127,92 @@ class Userbot:
             self._pending_qr_login = None
             return "need_2fa"
 
-    async def request_login_code(self) -> str:
+    async def request_login_code(self, force_sms: bool = False) -> str:
         await self.client.connect()
         if await self.client.is_user_authorized():
             return "already_authorized"
-        sent = await self.client.send_code_request(self.config.telegram.phone)
-        self._phone_code_hash = sent.phone_code_hash
-        return "sent"
+
+        now = time.time()
+        if self._phone_code_hash and self._phone_code_requested_at and now - self._phone_code_requested_at > 180:
+            logger.info("request_login_code: dropping stale hash")
+            self._phone_code_hash = None
+
+        # Reuse pending request unless user explicitly asks for SMS fallback.
+        if self._phone_code_hash and not force_sms:
+            logger.info("request_login_code: reusing pending hash")
+            return "already_sent"
+
+        try:
+            sent = await self.client.send_code_request(self.config.telegram.phone, force_sms=force_sms)
+            if getattr(sent, "phone_code_hash", None):
+                self._phone_code_hash = sent.phone_code_hash
+            self._phone_code_requested_at = now
+            self._last_code_delivery = type(getattr(sent, "type", None)).__name__
+            timeout = getattr(sent, "timeout", None)
+            self._last_code_timeout = int(timeout) if isinstance(timeout, (int, float)) else None
+            logger.info(
+                "request_login_code: type=%s force_sms=%s timeout=%s",
+                self._last_code_delivery,
+                force_sms,
+                self._last_code_timeout,
+            )
+            return "sms_sent" if force_sms else "sent"
+        except Exception as e:
+            msg = str(e).lower()
+            if "resendcoderequest" in msg or "all available options for this type of number were already used" in msg:
+                logger.warning("request_login_code: resend limited by Telegram")
+                return "already_sent" if self._phone_code_hash else "resend_limited"
+            logger.error("request_login_code failed: %s", e)
+            return "error"
 
     async def sign_in_with_code(self, code: str) -> str:
+        code = "".join(code.split())  # strip spaces (user types "1 2 3 4 5")
+        await self.client.connect()
         if not self._phone_code_hash:
+            logger.warning("sign_in_with_code: no hash set")
             return "no_code_request"
         try:
+            logger.info(f"sign_in_with_code: attempting with hash={self._phone_code_hash[:10]}...")
             await self.client.sign_in(
                 self.config.telegram.phone,
                 code,
                 phone_code_hash=self._phone_code_hash,
             )
             self._phone_code_hash = None
+            self._phone_code_requested_at = None
+            self._last_code_delivery = None
+            self._last_code_timeout = None
             self.client.session.save()
             return "ok" if await self.client.is_user_authorized() else "failed"
         except PhoneCodeInvalidError:
             return "invalid_code"
         except PhoneCodeExpiredError:
             self._phone_code_hash = None
+            self._phone_code_requested_at = None
+            self._last_code_delivery = None
+            self._last_code_timeout = None
             return "expired_code"
         except SessionPasswordNeededError:
             return "need_2fa"
         except Exception as e:
             logger.error("Code sign-in failed: %s", e)
             return "error"
+
+    def get_code_delivery_hint(self) -> str:
+        t = self._last_code_delivery or ""
+        if "Sms" in t:
+            base = "Код отправлен по SMS."
+        elif "App" in t:
+            base = "Код отправлен в Telegram (сервисный чат 777000)."
+        elif "Call" in t:
+            base = "Код будет продиктован звонком Telegram."
+        elif t:
+            base = f"Тип доставки кода: {t}."
+        else:
+            base = ""
+        if self._last_code_timeout:
+            base = (base + f" Повторный запрос обычно доступен через ~{self._last_code_timeout}с.").strip()
+        return base
 
     async def sign_in_with_password(self, password: str) -> str:
         try:
@@ -219,6 +279,7 @@ class Userbot:
         seller_id = msg.sender_id
         if not seller_id:
             return
+        seller_username = getattr(msg.sender, 'username', None) if msg.sender else None
 
         chat = await self._chat_title(msg)
         chat_external = str(msg.chat_id)
@@ -275,7 +336,7 @@ class Userbot:
             "type": matched_value,
             "price": price,
             "link": link,
-            "author": str(seller_id),
+            "author": f"@{seller_username}" if seller_username else str(seller_id),
             "chat_title": chat,
             "source_chat": chat_external,
             "message_snippet": (msg.text or "")[:200],
@@ -294,7 +355,14 @@ class Userbot:
         )
 
         # Step 4: dedup check (bypass for no_dedup_ids)
-        no_dedup = seller_id in (self.config.actions.no_dedup_ids or [])
+        _no_dedup_ids = self.config.actions.no_dedup_ids or []
+        no_dedup = seller_id in _no_dedup_ids
+        if not no_dedup and seller_username:
+            _un = seller_username.lower()
+            no_dedup = any(
+                isinstance(e, str) and e.lstrip('@').lower() == _un
+                for e in _no_dedup_ids
+            )
         is_dup = False if no_dedup else await self.dedup.is_seen(
             seller_id, cooldown_hours=self.config.actions.dm_cooldown_hours
         )
@@ -317,14 +385,14 @@ class Userbot:
             )
 
             # Decide actions
-            actions = self.processor.decide_actions(chat_external, seller_id, meta)
+            actions = self.processor.decide_actions(chat_external, seller_id, meta, username=seller_username)
 
             # Override DM text with Groq-generated version if applicable
             if actions.get("should_dm") and self.config.actions.use_groq_dm:
                 groq_text = nlp_dm_text  # already generated during NLP step
                 if not groq_text:
                     groq_text = await generate_dm(
-                        msg.text or matched_value, matched_value, self.config
+                        msg.text or matched_value, matched_value, self.config, price=price
                     )
                 if groq_text:
                     actions = dict(actions, dm_text=groq_text)
@@ -368,13 +436,20 @@ class Userbot:
             logger.debug("Vision rate limit reached, skipping")
             return None
 
+        # Auto-generate vision prompt from current keywords
+        kw_list = ", ".join(self.config.monitoring.keywords[:15]) or "товар"
+        prompt = (
+            f"На фото один из товаров: {kw_list}? "
+            "Если да — ответь: ТИП: ..., ЦЕНА: ... Если нет — ответь: НЕТ"
+        )
+
         try:
             photo_bytes = await self.client.download_media(msg, bytes)
             if not photo_bytes:
                 return None
             reply = await analyse_image(
                 photo_bytes,
-                self.config.monitoring.vision_prompt,
+                prompt,
                 self.config.vision,
             )
             return parse_vision_response(reply) if reply else None
