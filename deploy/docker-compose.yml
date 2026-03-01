@@ -1,0 +1,9 @@
+services:
+  tg-parsing:
+    build: .
+    restart: always
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./data:/app/data
+      - ./session:/app/session
+    mem_limit: 512m

@@ -1,0 +1,53 @@
+{
+  "telegram": {
+    "api_id": 0,
+    "api_hash": "your_api_hash_from_my.telegram.org",
+    "phone": "+79001234567",
+    "session_name": "session/monitor",
+    "bot_token": "your_bot_token_from_@BotFather"
+  },
+  "monitoring": {
+    "chats": ["@cg_baraholka"],
+    "keywords": ["телевизор", "колонка", "jbl"],
+    "max_price": 30000,
+    "vision_prompt": "На фото телевизор, колонка или аудиосистема? Если да — ответь: ТИП: ..., ЦЕНА: ... Если нет — ответь: НЕТ",
+    "vision_require_listing_signal": true,
+    "use_text_nlp": false,
+    "text_nlp_per_minute": 3
+  },
+  "vision": {
+    "provider": "groq",
+    "api_key": "",
+    "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+    "base_url": "https://api.groq.com/openai/v1/chat/completions"
+  },
+  "actions": {
+    "notify_chat_id": "me",
+    "auto_dm": true,
+    "forward_to_main_bot": false,
+    "forward_mode": "notify_with_meta",
+    "dm_template": "Привет! {type} ещё доступна? Цена: {price}. Ссылка: {link}",
+    "dry_run": false,
+    "dm_delay_min": 60,
+    "dm_delay_max": 120,
+    "dm_cooldown_hours": 25,
+    "no_dedup_ids": [],
+    "use_groq_dm": false
+  },
+  "rules": {
+    "keyword_map": {
+      "колонка": ["акустика", "speaker", "JBL", "bluetooth", "саундбар", "бас"],
+      "телевизор": ["телек", "экран", "плазма", "OLED", "QLED"]
+    },
+    "vision_enabled": true,
+    "per_chat_overrides": {},
+    "opt_out_list": []
+  },
+  "rate_limits": {
+    "dm_per_hour": 15,
+    "vision_per_minute": 5
+  },
+  "database": {
+    "path": "data/dedup.db"
+  }
+}
