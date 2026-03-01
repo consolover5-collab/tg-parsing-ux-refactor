@@ -89,17 +89,34 @@ class Userbot:
             self._started = True
             return True
 
-        @self.client.on(events.NewMessage(chats=chats))
-        async def on_message(event: events.NewMessage.Event):
-            if self.paused:
-                return
-            msg: Message = event.message
+        # Pre-resolve chat entities to numeric IDs for reliable event filtering
+        resolved_ids = []
+        for chat in chats:
+            try:
+                entity = await self.client.get_input_entity(chat)
+                resolved_ids.append(entity)
+                logger.debug("Resolved chat %s -> %s", chat, entity)
+            except Exception as e:
+                logger.warning("Cannot resolve chat %s: %s", chat, e)
+        if not resolved_ids:
+            logger.error("No chats could be resolved, monitoring disabled")
+            self._started = True
+            return True
 
-            # Album grouping
-            if msg.grouped_id:
-                await self._handle_album(msg)
-            else:
-                await self._process_message(msg)
+        @self.client.on(events.NewMessage(chats=resolved_ids, incoming=True))
+        async def on_message(event: events.NewMessage.Event):
+            try:
+                if self.paused:
+                    return
+                msg: Message = event.message
+
+                # Album grouping
+                if msg.grouped_id:
+                    await self._handle_album(msg)
+                else:
+                    await self._process_message(msg)
+            except Exception:
+                logger.exception("on_message error")
 
         logger.info("Monitoring %d chats: %s", len(chats), chats)
         self._started = True

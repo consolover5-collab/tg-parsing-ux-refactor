@@ -36,6 +36,7 @@ def setup_logging():
         handlers=[logging.StreamHandler(sys.stderr)],
     )
     logging.getLogger("telethon").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
     logging.getLogger("aiogram").setLevel(logging.WARNING)
 
 
