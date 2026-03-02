@@ -309,3 +309,33 @@ services:
 5. Отправить повторно → бот уведомляет "🔄 Повтор", DM НЕ отправлен
 6. Кнопка "Тест" → проверка vision pipeline
 7. `sudo systemctl status tg-parsing` или `docker logs tg-parsing`
+
+---
+
+## Backlog (будущие доработки)
+
+### RAM-оптимизация (~156 MB → ~100 MB)
+
+Текущее потребление: 156 MB RSS на сервере с 1 GB RAM (Oracle Cloud ARM).
+
+1. **Telethon entity_cache_limit** (просто, -20-40 MB)
+   - `TelegramClient(..., entity_cache_limit=100)` вместо дефолтных 5000
+   - 7 чатов × тысячи пользователей → кеш раздувается впустую
+
+2. **Lazy import тяжёлых модулей** (просто, -5-10 MB)
+   - `vision.py` тянет PIL/Pillow при старте, `nlp.py` тянет aiohttp
+   - Импортировать только при первом вызове, не при загрузке модуля
+
+3. **Python `-O` флаг** (тривиально, -1-2 MB)
+   - `ExecStart=.../python -Ou main.py` — убирает docstrings и assert
+
+4. **Заменить aiogram на raw Bot API** (сложно, -40-45 MB)
+   - aiogram 3.x — самый тяжёлый компонент (46 MB при импорте)
+   - Control bot использует только inline-клавиатуры → можно через aiohttp + raw API
+   - Серьёзный рефакторинг всего control.py
+
+### Vision pre-filter
+
+- `vision_require_listing_signal=true` пропускает фото без подписи с ценой/продажей
+- Рассмотреть: если keyword match не сработал, но фото есть → vision без pre-filter
+- Или сделать pre-filter мягче (не только "продаю/цена", но и наличие любой подписи)
