@@ -1398,6 +1398,7 @@ async def handle_text_input(message: Message):
         try:
             idx = int(text) - 1
             removed = _cfg().monitoring.keywords.pop(idx)
+            _cfg().rules.keyword_map.pop(removed, None)
             _save_config()
             if _bot_instance.userbot:
                 _bot_instance.userbot.matcher.update(

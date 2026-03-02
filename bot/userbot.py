@@ -535,6 +535,9 @@ class Userbot:
     # ── Notifications ──────────────────────────────────────────────
 
     async def _notify_new(self, chat, match_type, matched_value, price, dm_sent, msg, forward_sent=False):
+        # In notify_with_meta mode, _forward_message already sent a full notification
+        if forward_sent and self.config.actions.forward_mode == ForwardMode.NOTIFY_WITH_META:
+            return
         price_str = f"{price:,} ₽".replace(",", " ") if price else "—"
         dm_str = "✉️ DM отправлен продавцу" if dm_sent else "⚠️ DM не отправлен (лимит или выключен)"
         forward_str = "📤 Переслано" if forward_sent else ""
