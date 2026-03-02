@@ -47,7 +47,13 @@ class KeywordMatcher:
 
         self._keywords = list(dict.fromkeys(terms))  # deduplicate, preserve order
         if self._keywords:
-            escaped = [re.escape(_stem(k)) for k in self._keywords]
+            escaped = []
+            for k in self._keywords:
+                s = _stem(k)
+                p = r"\b" + re.escape(s)
+                if len(s) <= 3:
+                    p += r"\b"
+                escaped.append(p)
             self._pattern = re.compile(
                 r"(?:" + "|".join(escaped) + r")",
                 re.IGNORECASE,
