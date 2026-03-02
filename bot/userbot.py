@@ -276,7 +276,10 @@ class Userbot:
                 if m.text:
                     primary = m
                     break
-            await self._process_message(primary)
+            try:
+                await self._process_message(primary)
+            except Exception:
+                logger.exception("_flush_album error (group_id=%s)", gid)
 
     # ── Main pipeline ──────────────────────────────────────────────
 

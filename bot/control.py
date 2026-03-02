@@ -1321,6 +1321,8 @@ async def handle_text_input(message: Message):
     elif action == "chat_del":
         try:
             idx = int(text) - 1
+            if idx < 0:
+                raise IndexError
             removed = _cfg().monitoring.chats.pop(idx)
             _save_config()
             await message.answer(
@@ -1397,6 +1399,8 @@ async def handle_text_input(message: Message):
     elif action == "kw_del":
         try:
             idx = int(text) - 1
+            if idx < 0:
+                raise IndexError
             removed = _cfg().monitoring.keywords.pop(idx)
             _cfg().rules.keyword_map.pop(removed, None)
             _save_config()
@@ -1520,6 +1524,8 @@ async def handle_text_input(message: Message):
     elif action == "opt_out_del":
         try:
             idx = int(text) - 1
+            if idx < 0:
+                raise IndexError
             removed = _cfg().rules.opt_out_list.pop(idx)
             _save_config()
             await message.answer(f"✅ {removed} удалён из чёрного списка")
@@ -1581,6 +1587,8 @@ async def handle_text_input(message: Message):
     elif action == "no_dedup_del":
         try:
             idx = int(text) - 1
+            if idx < 0:
+                raise IndexError
             removed = _cfg().actions.no_dedup_ids.pop(idx)
             _save_config()
             await message.answer(f"✅ {removed} удалён из белого списка")
@@ -1602,6 +1610,8 @@ async def handle_text_input(message: Message):
         syns = kmap.get(kw, [])
         try:
             idx = int(text) - 1
+            if idx < 0:
+                raise IndexError
             removed = syns.pop(idx)
             _save_config()
             if _bot_instance.userbot:
