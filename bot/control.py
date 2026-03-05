@@ -246,8 +246,18 @@ async def cb_menu(callback: CallbackQuery):
 
 # ── 📡 Мониторинг (chats + keywords + synonyms + price) ──────────
 
+def _format_keyword_short(kw: str) -> str:
+    """Format keyword with synonym count (compact view for monitoring screen)."""
+    kmap = _cfg().rules.keyword_map
+    val = kmap.get(kw)
+    count = len(val) if isinstance(val, list) else 0
+    if count:
+        return f"  • {kw}  <i>({count} син.)</i>"
+    return f"  • {kw}"
+
+
 def _format_keyword_with_synonyms(kw: str) -> str:
-    """Format keyword with its synonyms from keyword_map."""
+    """Format keyword with its synonyms (full view)."""
     kmap = _cfg().rules.keyword_map
     val = kmap.get(kw)
     if isinstance(val, list) and val:
@@ -285,9 +295,9 @@ async def _build_monitoring_screen(status_line: str = "") -> tuple[str, InlineKe
 
     parts.append("")
     if keywords:
-        parts.append("🔑 <b>Слова + синонимы:</b>")
+        parts.append("🔑 <b>Ключевые слова:</b>")
         for kw in keywords:
-            parts.append(_format_keyword_with_synonyms(kw))
+            parts.append(_format_keyword_short(kw))
     else:
         parts.append("🔑 Нет ключевых слов")
 
