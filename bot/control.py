@@ -256,7 +256,6 @@ def _format_keyword_with_synonyms(kw: str) -> str:
     return f"  • {kw}"
 
 
-@router.callback_query(F.data == "monitoring")
 async def _build_monitoring_screen(status_line: str = "") -> tuple[str, InlineKeyboardMarkup]:
     """Build monitoring screen text and keyboard. Returns (text, kb).
 
