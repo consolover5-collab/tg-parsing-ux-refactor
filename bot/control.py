@@ -1173,18 +1173,27 @@ async def _smart_handle(message: Message, text: str) -> None:
     kind = result.get("type", "unknown")
     if kind == "chat":
         value = (result.get("value") or "").strip()
-        m = re.search(r"t\.me/([A-Za-z0-9_]+)", value)
+        m = re.search(r"t\.me/([A-Za-z0-9_]{5,64})", value)
         if m:
             value = f"@{m.group(1)}"
-        if not value.startswith("@"):
+        elif not value.startswith("@"):
             value = f"@{value.lstrip('@')}"
-        if value in cfg.monitoring.chats:
-            await message.answer(f"ℹ️ Чат {value} уже в списке мониторинга.")
+        # Validate through the same normalizer used for manual input
+        validated = _normalize_chat_ref_input(value)
+        if not validated:
+            await message.answer(
+                f"❌ <b>{value}</b> не похоже на валидный Telegram-чат.\n"
+                "Введите @username (минимум 5 символов) или числовой ID чата.",
+                parse_mode="HTML",
+            )
             return
-        cfg.monitoring.chats.append(value)
+        if validated in cfg.monitoring.chats:
+            await message.answer(f"ℹ️ Чат {validated} уже в списке мониторинга.")
+            return
+        cfg.monitoring.chats.append(validated)
         _save_config()
         await message.answer(
-            f"✅ Добавил <b>{value}</b> в мониторинг.\nПерезапустите сервис:",
+            f"✅ Добавил <b>{validated}</b> в мониторинг.\nПерезапустите сервис:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot"),
@@ -1267,13 +1276,14 @@ async def handle_forwarded_input(message: Message):
         return
     chat_ref = _extract_chat_ref_from_message(message)
     if chat_ref:
-        if chat_ref in _cfg().monitoring.chats:
-            await message.answer(f"ℹ️ Чат {chat_ref} уже в списке мониторинга.")
+        validated = _normalize_chat_ref_input(chat_ref) or chat_ref
+        if validated in _cfg().monitoring.chats:
+            await message.answer(f"ℹ️ Чат {validated} уже в списке мониторинга.")
             return
-        _cfg().monitoring.chats.append(chat_ref)
+        _cfg().monitoring.chats.append(validated)
         _save_config()
         await message.answer(
-            f"✅ Добавил <b>{chat_ref}</b> в мониторинг.\nПерезапустите сервис:",
+            f"✅ Добавил <b>{validated}</b> в мониторинг.\nПерезапустите сервис:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot"),
