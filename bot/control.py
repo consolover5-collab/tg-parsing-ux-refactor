@@ -115,14 +115,7 @@ async def _handle_chat_add(message: Message, fallback_text: str = "") -> bool:
     display = _display_chat_ref(chat_ref, title)
     _cfg().monitoring.chats.append(chat_ref)
     _save_config()
-    await message.answer(
-        f"✅ Чат {display} добавлен.\n"
-        "⚠️ Перезапустите бота, чтобы начать мониторинг:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="monitoring")],
-        ]),
-    )
+    await _send_monitoring_screen(message, f"✅ Чат {display} добавлен.", auto_restart=True)
     return True
 
 
@@ -260,13 +253,21 @@ def _format_keyword_with_synonyms(kw: str) -> str:
 
 
 @router.callback_query(F.data == "monitoring")
-async def cb_monitoring(callback: CallbackQuery):
+async def _build_monitoring_screen(status_line: str = "") -> tuple[str, InlineKeyboardMarkup]:
+    """Build monitoring screen text and keyboard. Returns (text, kb).
+
+    status_line: optional status prefix like "✅ Слово удалено" shown at top.
+    """
     cfg = _cfg()
     chats = cfg.monitoring.chats
     keywords = cfg.monitoring.keywords
     price = cfg.monitoring.max_price
 
-    parts = ["<b>📡 Мониторинг</b>\n"]
+    parts = []
+    if status_line:
+        parts.append(status_line)
+        parts.append("")
+    parts.append("<b>📡 Мониторинг</b>\n")
 
     if chats:
         parts.append("📡 <b>Чаты:</b>")
@@ -309,7 +310,30 @@ async def cb_monitoring(callback: CallbackQuery):
         ],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu")],
     ])
-    await callback.message.edit_text("\n".join(parts), reply_markup=kb, parse_mode="HTML")
+    return "\n".join(parts), kb
+
+
+async def _send_monitoring_screen(message, status_line: str = "", auto_restart: bool = False):
+    """Send updated monitoring screen as a new message (for use after text input actions).
+
+    If auto_restart=True, schedule a bot restart after sending the screen
+    (used when chat list changes require re-registering Telethon handlers).
+    """
+    text, kb = await _build_monitoring_screen(status_line)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    if auto_restart:
+        await message.answer("🔄 Перезапускаю для применения изменений…")
+        import os, signal
+        # Small delay so the message is sent before process dies
+        import asyncio
+        await asyncio.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+
+@router.callback_query(F.data == "monitoring")
+async def cb_monitoring(callback: CallbackQuery):
+    text, kb = await _build_monitoring_screen()
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
@@ -1234,13 +1258,7 @@ async def _smart_handle(message: Message, text: str) -> None:
             return
         cfg.monitoring.chats.append(validated)
         _save_config()
-        await message.answer(
-            f"✅ Добавил <b>{display}</b> в мониторинг.\nПерезапустите сервис:",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot"),
-            ]]),
-        )
+        await _send_monitoring_screen(message, f"✅ Добавил {display}.", auto_restart=True)
     elif kind == "keyword":
         kw = (result.get("value") or "").strip().lower()
         synonyms = [s.strip() for s in (result.get("synonyms") or []) if s.strip()]
@@ -1326,13 +1344,7 @@ async def handle_forwarded_input(message: Message):
             return
         _cfg().monitoring.chats.append(validated)
         _save_config()
-        await message.answer(
-            f"✅ Добавил <b>{display}</b> в мониторинг.\nПерезапустите сервис:",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot"),
-            ]]),
-        )
+        await _send_monitoring_screen(message, f"✅ Добавил {display}.", auto_restart=True)
     else:
         text = (message.text or message.caption or "").strip()
         if text:
@@ -1381,15 +1393,9 @@ async def handle_text_input(message: Message):
             _save_config()
             title = await _resolve_chat_title(removed)
             display = _display_chat_ref(removed, title)
-            await message.answer(
-                f"✅ Чат {display} удалён.\n⚠️ Перезапустите бота для применения:",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot")],
-                    [InlineKeyboardButton(text="◀️ В мониторинг", callback_data="monitoring")],
-                ]),
-            )
+            await _send_monitoring_screen(message, f"✅ Чат {display} удалён.", auto_restart=True)
         except (ValueError, IndexError):
-            await message.answer("❌ Неверный номер.")
+            await message.answer("❌ Неверный номер. Введите номер из списка.")
         return
 
     elif action == "kw_edit":
@@ -1438,12 +1444,13 @@ async def handle_text_input(message: Message):
             _bot_instance.userbot.matcher.update(
                 cfg.monitoring.keywords, keyword_map=cfg.rules.keyword_map
             )
-        parts = []
+        status_parts = []
         if added:
-            parts.append(f"✅ Добавлено: {len(added)}")
+            status_parts.append(f"✅ Добавлено: {len(added)}")
         if updated:
-            parts.append(f"🔄 Обновлено: {len(updated)}")
-        await message.answer("\n".join(parts) or "Ничего не импортировано.")
+            status_parts.append(f"🔄 Обновлено: {len(updated)}")
+        status = " | ".join(status_parts) if status_parts else "Ничего не импортировано."
+        await _send_monitoring_screen(message, status)
         return
 
     elif action == "kw_add":
@@ -1465,17 +1472,17 @@ async def handle_text_input(message: Message):
                     _cfg().monitoring.keywords,
                     keyword_map=_cfg().rules.keyword_map,
                 )
-            await message.answer(f"✅ Слово «{removed}» удалено.")
+            await _send_monitoring_screen(message, f"✅ Слово «{removed}» удалено.")
         except (ValueError, IndexError):
-            await message.answer("❌ Неверный номер.")
+            await message.answer("❌ Неверный номер. Введите номер из списка.")
         return
 
     elif action == "max_price":
         try:
-            new_price = int(text.replace(" ", "").replace("₽", "").replace("р", ""))
+            new_price = int(text.replace(" ", "").replace("₽", "").replace("р", "").replace("€", "").replace("$", ""))
             _cfg().monitoring.max_price = new_price
             _save_config()
-            await message.answer(f"✅ Макс. цена: {new_price:,}".replace(",", " "))
+            await _send_monitoring_screen(message, f"✅ Макс. цена: {new_price:,}".replace(",", " "))
         except ValueError:
             await message.answer("❌ Введите число.")
         return
