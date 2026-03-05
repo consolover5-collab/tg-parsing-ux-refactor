@@ -447,18 +447,21 @@ async def cb_synonyms(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("syn_show:"))
-async def cb_syn_show(callback: CallbackQuery):
-    kw = callback.data.split(":", 1)[1]
+def _build_syn_show_screen(kw: str, status_line: str = "") -> tuple[str, InlineKeyboardMarkup]:
+    """Build synonym list screen for a keyword. Returns (text, kb)."""
     kmap = _cfg().rules.keyword_map
     val = kmap.get(kw)
     syns = val if isinstance(val, list) else []
 
+    parts = []
+    if status_line:
+        parts.append(status_line)
+        parts.append("")
     if syns:
         lines = [f"  {i+1}. {s}" for i, s in enumerate(syns)]
-        text = f"🏷 <b>Синонимы для «{kw}»:</b>\n" + "\n".join(lines)
+        parts.append(f"🏷 <b>Синонимы для «{kw}»:</b>\n" + "\n".join(lines))
     else:
-        text = f"🏷 У слова «{kw}» нет синонимов."
+        parts.append(f"🏷 У слова «{kw}» нет синонимов.")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -467,6 +470,13 @@ async def cb_syn_show(callback: CallbackQuery):
         ],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="synonyms")],
     ])
+    return "\n".join(parts), kb
+
+
+@router.callback_query(F.data.startswith("syn_show:"))
+async def cb_syn_show(callback: CallbackQuery):
+    kw = callback.data.split(":", 1)[1]
+    text, kb = _build_syn_show_screen(kw)
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
@@ -1208,7 +1218,11 @@ async def cb_kw_confirm(callback: CallbackQuery):
     _save_config()
     if _bot_instance.userbot:
         _bot_instance.userbot.matcher.update(cfg.monitoring.keywords, keyword_map=cfg.rules.keyword_map)
-    await callback.message.edit_text(f"✅ Сохранено: <b>{kw}</b>", parse_mode="HTML")
+    if not is_new:
+        screen_text, kb = _build_syn_show_screen(kw, f"✅ Синонимы для «{kw}» обновлены")
+        await callback.message.edit_text(screen_text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await callback.message.edit_text(f"✅ Сохранено: <b>{kw}</b>", parse_mode="HTML")
 
 
 @router.callback_query(F.data == "kw_decline")
@@ -1694,7 +1708,8 @@ async def handle_text_input(message: Message):
                     _cfg().monitoring.keywords,
                     keyword_map=_cfg().rules.keyword_map,
                 )
-            await message.answer(f"✅ Синоним «{removed}» удалён из «{kw}»")
+            screen_text, kb = _build_syn_show_screen(kw, f"✅ Синоним «{removed}» удалён")
+            await message.answer(screen_text, reply_markup=kb, parse_mode="HTML")
         except (ValueError, IndexError):
             await message.answer("❌ Неверный номер.")
         return
