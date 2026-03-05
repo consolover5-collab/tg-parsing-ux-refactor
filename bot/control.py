@@ -74,6 +74,28 @@ def _normalize_chat_ref_input(text: str) -> str | None:
     return None
 
 
+async def _resolve_chat_title(chat_ref: str) -> str | None:
+    """Try to resolve a chat reference to its human-readable title via userbot."""
+    ub = _bot_instance.userbot if _bot_instance else None
+    if not ub or not ub.client.is_connected():
+        return None
+    try:
+        entity = await ub.client.get_entity(int(chat_ref) if chat_ref.lstrip("-").isdigit() else chat_ref)
+        return getattr(entity, "title", None) or getattr(entity, "username", None)
+    except Exception as e:
+        logger.debug("Could not resolve title for %s: %s", chat_ref, e)
+        return None
+
+
+def _display_chat_ref(chat_ref: str, title: str | None = None) -> str:
+    """Format chat ref for display: show title if available, especially for numeric IDs."""
+    if title:
+        if chat_ref.lstrip("-").isdigit():
+            return f"{title} ({chat_ref})"
+        return f"{title} [{chat_ref}]"
+    return chat_ref
+
+
 async def _handle_chat_add(message: Message, fallback_text: str = "") -> bool:
     chat_ref = _extract_chat_ref_from_message(message)
     if not chat_ref:
@@ -81,17 +103,20 @@ async def _handle_chat_add(message: Message, fallback_text: str = "") -> bool:
     if not chat_ref:
         await message.answer(
             "❌ Не удалось определить чат из пересылки.\n"
-            "Если Telegram скрывает источник, введите @username или ID чата вручную."
+            "Если Telegram скрывает источник, введите @username, ссылку t.me/... или ID чата."
         )
         return False
     if chat_ref in _cfg().monitoring.chats:
-        await message.answer(f"ℹ️ Чат {chat_ref} уже в списке.")
+        title = await _resolve_chat_title(chat_ref)
+        await message.answer(f"ℹ️ Чат {_display_chat_ref(chat_ref, title)} уже в списке.")
         return True
 
+    title = await _resolve_chat_title(chat_ref)
+    display = _display_chat_ref(chat_ref, title)
     _cfg().monitoring.chats.append(chat_ref)
     _save_config()
     await message.answer(
-        f"✅ Чат {chat_ref} добавлен.\n"
+        f"✅ Чат {display} добавлен.\n"
         "⚠️ Перезапустите бота, чтобы начать мониторинг:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot")],
@@ -246,7 +271,11 @@ async def cb_monitoring(callback: CallbackQuery):
     if chats:
         parts.append("📡 <b>Чаты:</b>")
         for i, c in enumerate(chats):
-            parts.append(f"  {i+1}. {c}")
+            if c.lstrip("-").isdigit():
+                title = await _resolve_chat_title(c)
+                parts.append(f"  {i+1}. {_display_chat_ref(c, title)}")
+            else:
+                parts.append(f"  {i+1}. {c}")
     else:
         parts.append("📡 Нет чатов")
 
@@ -1192,13 +1221,15 @@ async def _smart_handle(message: Message, text: str) -> None:
                 parse_mode="HTML",
             )
             return
+        title = await _resolve_chat_title(validated)
+        display = _display_chat_ref(validated, title)
         if validated in cfg.monitoring.chats:
-            await message.answer(f"ℹ️ Чат {validated} уже в списке мониторинга.")
+            await message.answer(f"ℹ️ Чат {display} уже в списке мониторинга.")
             return
         cfg.monitoring.chats.append(validated)
         _save_config()
         await message.answer(
-            f"✅ Добавил <b>{validated}</b> в мониторинг.\nПерезапустите сервис:",
+            f"✅ Добавил <b>{display}</b> в мониторинг.\nПерезапустите сервис:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot"),
@@ -1282,13 +1313,15 @@ async def handle_forwarded_input(message: Message):
     chat_ref = _extract_chat_ref_from_message(message)
     if chat_ref:
         validated = _normalize_chat_ref_input(chat_ref) or chat_ref
+        title = await _resolve_chat_title(validated)
+        display = _display_chat_ref(validated, title)
         if validated in _cfg().monitoring.chats:
-            await message.answer(f"ℹ️ Чат {validated} уже в списке мониторинга.")
+            await message.answer(f"ℹ️ Чат {display} уже в списке мониторинга.")
             return
         _cfg().monitoring.chats.append(validated)
         _save_config()
         await message.answer(
-            f"✅ Добавил <b>{validated}</b> в мониторинг.\nПерезапустите сервис:",
+            f"✅ Добавил <b>{display}</b> в мониторинг.\nПерезапустите сервис:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot"),
