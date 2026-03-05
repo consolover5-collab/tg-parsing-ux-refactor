@@ -75,16 +75,26 @@ async def analyse_image(
 
 
 def parse_vision_response(text: str) -> dict | None:
-    """Parse vision model reply. Returns {'type': ..., 'price': ...} or None if 'НЕТ'."""
+    """Parse vision model reply. Returns {'type': ..., 'price': ...} or None if 'НЕТ'.
+
+    Handles both multi-line and single-line formats:
+      "ТИП: телевизор, ЦЕНА: 30000"
+      "ТИП: телевизор\\nЦЕНА: 30000"
+    """
     if not text:
         return None
     upper = text.upper().strip()
     if upper.startswith("НЕТ") or upper == "НЕТ":
         return None
 
+    import re
+
     result: dict = {"type": None, "price": None}
 
-    for line in text.splitlines():
+    # Normalize: split on newlines OR commas followed by known field names
+    normalized = re.sub(r',\s*(?=(?:ТИП|ЦЕНА)\s*:)', '\n', text, flags=re.IGNORECASE)
+
+    for line in normalized.splitlines():
         line = line.strip()
         if line.upper().startswith("ТИП:"):
             result["type"] = line.split(":", 1)[1].strip()

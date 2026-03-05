@@ -14,14 +14,43 @@ logger = logging.getLogger(__name__)
 
 # Signals that suggest a message is a marketplace listing
 _LISTING_RE = re.compile(
-    r'продаю|продам|отдам|отдаётся|продаётся|цена|стоит|₽|руб|rub|\d[\d\s]{2,6}\s*(?:руб|р\.|₽|тыс|к\b)',
+    r'продаю|продам|отдам|отдаётся|продаётся|цена|стоит|₽|руб|rub|€|евро|eur'
+    r'|\d[\d\s]{2,6}\s*(?:руб|р\.|₽|тыс|к\b|€|евро|eur)',
+    re.IGNORECASE,
+)
+
+# Messages matching these patterns are NOT listings (requests, questions, services)
+_NOT_LISTING_RE = re.compile(
+    r'кто может|кто (?:по)?может|ищу (?:человека|мастера|помощ)'
+    r'|подскажите|посоветуйте'
+    r'|нужен человек|требуется|потребуется'
+    r'|ищу работу|ищу сотрудник|нужны ?\d+ .{0,30}человек'
+    r'|(?:пере|до)везти|перевезите|перенести'
+    r'|(?:сдаётся|сдается|сдам|сниму|аренда) (?:квартир|комнат|дом|студи)'
+    r'|набираем|вакансия|заработ(?:ок|ать|ке)'
+    r'|уровень [ABАВав]\d|языковы[ех]|курсов'
+    r'|(?:на старте|поддержка) \d[\d\s]*[-–]\s*\d',
     re.IGNORECASE,
 )
 
 
+def is_not_listing(text: str) -> bool:
+    """Return True if the text is clearly NOT a sales listing (service request, job ad, etc.)."""
+    if not text:
+        return False
+    return bool(_NOT_LISTING_RE.search(text))
+
+
 def looks_like_listing(text: str) -> bool:
-    """Quick pre-filter: does this text look like a sales listing?"""
-    return bool(_LISTING_RE.search(text or ""))
+    """Quick pre-filter: does this text look like a sales listing?
+
+    Returns False for service requests, job ads, language courses, etc.
+    """
+    if not text:
+        return False
+    if _NOT_LISTING_RE.search(text):
+        return False
+    return bool(_LISTING_RE.search(text))
 
 
 _DEFAULT_SYSTEM = (

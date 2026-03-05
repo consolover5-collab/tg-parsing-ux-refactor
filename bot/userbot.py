@@ -20,7 +20,7 @@ from bot.price import extract_price
 from bot.dedup import DedupChecker
 from bot.ratelimit import RateLimiter
 from bot.vision import analyse_image, parse_vision_response
-from bot.nlp import analyse_text, generate_dm, looks_like_listing
+from bot.nlp import analyse_text, generate_dm, looks_like_listing, is_not_listing
 from bot.processor import MessageProcessor
 from db.database import Database
 
@@ -310,6 +310,11 @@ class Userbot:
 
         # Step 1: keyword/synonym match on text
         if msg.text:
+            # Skip messages that are clearly not listings (job ads, requests, etc.)
+            if is_not_listing(msg.text):
+                logger.debug("Skipped non-listing message: %s", msg.text[:60])
+                return
+
             kw = self.matcher.match(msg.text)
             if kw:
                 match_type = "keyword"
@@ -337,9 +342,14 @@ class Userbot:
         if not match_type and msg.photo and self.config.rules.vision_enabled:
             vision_result = await self._try_vision(msg)
             if vision_result:
-                match_type = "vision"
-                matched_value = vision_result.get("type", "")
-                price = vision_result.get("price")
+                vision_type = vision_result.get("type", "")
+                # Validate: vision result must relate to one of our keywords
+                if self._vision_matches_keywords(vision_type):
+                    match_type = "vision"
+                    matched_value = vision_type
+                    price = vision_result.get("price")
+                else:
+                    logger.debug("Vision type '%s' not in keywords, skipping", vision_type)
 
         if not match_type:
             return  # no match
@@ -573,6 +583,22 @@ class Userbot:
         )
         if self.notify:
             await self.notify(text)
+
+    # ── Validation ──────────────────────────────────────────────────
+
+    def _vision_matches_keywords(self, vision_type: str) -> bool:
+        """Check if vision-detected type relates to any of our keywords."""
+        if not vision_type:
+            return False
+        vt = vision_type.lower()
+        # Check against keywords list and keyword_map keys
+        all_terms = [k.lower() for k in self.config.monitoring.keywords]
+        all_terms.extend(k.lower() for k in self.config.rules.keyword_map.keys())
+        # Also include synonym values
+        for synonyms in self.config.rules.keyword_map.values():
+            if isinstance(synonyms, list):
+                all_terms.extend(s.lower() for s in synonyms)
+        return any(term in vt or vt in term for term in all_terms)
 
     # ── Helpers ─────────────────────────────────────────────────────
 
