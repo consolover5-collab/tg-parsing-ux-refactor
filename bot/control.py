@@ -591,7 +591,6 @@ async def cb_recent(callback: CallbackQuery):
 @router.callback_query(F.data == "settings")
 async def cb_settings(callback: CallbackQuery):
     cfg = _cfg()
-    dry_run_status = "вкл" if cfg.actions.dry_run else "выкл"
     notify = cfg.actions.notify_chat_id
 
     buttons = []
@@ -600,18 +599,9 @@ async def cb_settings(callback: CallbackQuery):
     if _has_groq():
         vision_status = "вкл" if cfg.rules.vision_enabled else "выкл"
         nlp_status = "вкл" if cfg.monitoring.use_text_nlp else "выкл"
-        groq_dm_status = "вкл" if cfg.actions.use_groq_dm else "выкл"
         buttons.append([
             InlineKeyboardButton(text=f"👁 Vision: {vision_status}", callback_data="toggle_vision"),
             InlineKeyboardButton(text=f"🧬 NLP: {nlp_status}", callback_data="toggle_text_nlp"),
-        ])
-        buttons.append([
-            InlineKeyboardButton(text=f"🤖 Groq DM: {groq_dm_status}", callback_data="toggle_groq_dm"),
-            InlineKeyboardButton(text=f"🧪 Dry-run: {dry_run_status}", callback_data="toggle_dry_run"),
-        ])
-    else:
-        buttons.append([
-            InlineKeyboardButton(text=f"🧪 Dry-run: {dry_run_status}", callback_data="toggle_dry_run"),
         ])
 
     buttons.extend([
@@ -632,8 +622,8 @@ async def cb_settings(callback: CallbackQuery):
 
     parts = [f"⚙️ <b>Настройки</b>\n"]
     if _has_groq():
-        parts.append(f"👁 Vision: {vision_status} | 🧬 NLP: {nlp_status} | 🤖 Groq DM: {groq_dm_status}")
-    parts.append(f"🧪 Dry-run: {dry_run_status} | 🔔 Уведомления: {notify}")
+        parts.append(f"👁 Vision: {vision_status} | 🧬 NLP: {nlp_status}")
+    parts.append(f"🔔 Уведомления: {notify}")
 
     await callback.message.edit_text(
         "\n".join(parts),
@@ -798,28 +788,36 @@ async def cb_toggle_pause(callback: CallbackQuery):
 async def cb_autodm(callback: CallbackQuery):
     cfg = _cfg()
     auto_dm = "вкл" if cfg.actions.auto_dm else "выкл"
+    dry_run_status = "вкл" if cfg.actions.dry_run else "выкл"
     delay_range = f"{cfg.actions.dm_delay_min}–{cfg.actions.dm_delay_max}с"
     cooldown = cfg.actions.dm_cooldown_hours
     tpl = cfg.actions.dm_template[:60] + "…" if len(cfg.actions.dm_template) > 60 else cfg.actions.dm_template
 
-    text = (
-        f"✉️ <b>Авто-DM</b>\n\n"
-        f"Статус: {auto_dm}\n"
-        f"📝 «{tpl}»\n"
-        f"⏱ Задержка: {delay_range}\n"
-        f"🔁 Повтор через: {cooldown} ч"
-    )
+    parts = [f"✉️ <b>Авто-DM</b>\n"]
+    parts.append(f"Статус: {auto_dm}")
+    if cfg.actions.dry_run:
+        parts.append("⚠️ <b>Dry-run включён</b> — DM не отправляются")
+    parts.append(f"📝 «{tpl}»")
+    parts.append(f"⏱ Задержка: {delay_range}")
+    parts.append(f"🔁 Повтор через: {cooldown} ч")
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    buttons = [
         [InlineKeyboardButton(text=f"✉️ Авто-DM: {auto_dm}", callback_data="toggle_auto_dm")],
         [InlineKeyboardButton(text="📝 Шаблон", callback_data="edit_dm_template")],
         [
             InlineKeyboardButton(text=f"⏱ Задержка: {delay_range}", callback_data="set_dm_delay"),
             InlineKeyboardButton(text=f"🔁 Повтор: {cooldown}ч", callback_data="set_dm_cooldown"),
         ],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu")],
-    ])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        [InlineKeyboardButton(text=f"🧪 Dry-run: {dry_run_status}", callback_data="toggle_dry_run")],
+    ]
+    if _has_groq():
+        groq_dm_status = "вкл" if cfg.actions.use_groq_dm else "выкл"
+        parts.append(f"🤖 Groq DM: {groq_dm_status}")
+        buttons.append([InlineKeyboardButton(text=f"🤖 Groq DM: {groq_dm_status}", callback_data="toggle_groq_dm")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await callback.message.edit_text("\n".join(parts), reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 # redirect old actions_menu to autodm
@@ -843,7 +841,7 @@ async def cb_toggle_dry_run(callback: CallbackQuery):
     _save_config()
     status = "вкл" if _cfg().actions.dry_run else "выкл"
     await callback.answer(f"Dry-run: {status}", show_alert=True)
-    await cb_settings(callback)
+    await cb_autodm(callback)
 
 
 @router.callback_query(F.data == "toggle_text_nlp")
@@ -861,7 +859,7 @@ async def cb_toggle_groq_dm(callback: CallbackQuery):
     _save_config()
     status = "вкл" if _cfg().actions.use_groq_dm else "выкл"
     await callback.answer(f"Groq DM: {status}", show_alert=True)
-    await cb_settings(callback)
+    await cb_autodm(callback)
 
 
 @router.callback_query(F.data == "set_dm_delay")
@@ -1045,7 +1043,9 @@ async def cb_help(callback: CallbackQuery):
         "• Вкл/выкл автоматической отправки сообщений продавцам\n"
         "• <b>Шаблон</b> — переменные: <code>{type}</code> <code>{price}</code> <code>{link}</code>\n"
         "• <b>Задержка</b> — случайная пауза перед отправкой (имитация живого)\n"
-        "• <b>Повтор</b> — cooldown: через N часов можно написать снова\n\n"
+        "• <b>Повтор</b> — cooldown: через N часов можно написать снова\n"
+        "• <b>Dry-run</b> — тестовый режим: находки видны, DM не отправляются\n"
+        "• <b>Groq DM</b> — AI-генерация персонализированных сообщений\n\n"
 
         "<b>📋 История</b>\n"
         "• <b>Все находки</b> — последние совпадения с ценой и типом\n"
@@ -1058,10 +1058,8 @@ async def cb_help(callback: CallbackQuery):
         text += (
             "• 👁 <b>Vision</b> — распознавание товаров на фото (Groq API)\n"
             "• 🧬 <b>NLP</b> — семантический анализ текста объявлений\n"
-            "• 🤖 <b>Groq DM</b> — AI-генерация персонализированных сообщений\n"
         )
     text += (
-        "• 🧪 <b>Dry-run</b> — тестовый режим: находки видны, DM не отправляются\n"
         "• 📊 <b>Лимиты</b> — квоты DM/час, Vision/мин, NLP/мин\n"
         "• 👥 <b>Списки</b> — чёрный (не писать) и белый (игнор cooldown)\n"
         "  Принимают <code>@username</code> и числовой user_id\n"
