@@ -54,11 +54,21 @@ def _normalize_chat_ref_input(text: str) -> str | None:
     value = (text or "").strip()
     if not value:
         return None
+    # t.me/c/CHANNEL_ID/MSG_ID — private channel link
+    m = re.search(r"t\.me/c/(\d+)", value)
+    if m:
+        return f"-100{m.group(1)}"
+    # t.me/USERNAME — public channel link
+    m = re.search(r"t\.me/([A-Za-z0-9_]{5,64})", value)
+    if m:
+        return f"@{m.group(1)}"
+    # @username
     if value.startswith("@"):
         username = value[1:]
         if re.fullmatch(r"[A-Za-z0-9_]{5,64}", username):
             return f"@{username}"
         return None
+    # Numeric chat ID
     if re.fullmatch(r"-?\d+", value):
         return value
     return None
@@ -1173,17 +1183,12 @@ async def _smart_handle(message: Message, text: str) -> None:
     kind = result.get("type", "unknown")
     if kind == "chat":
         value = (result.get("value") or "").strip()
-        m = re.search(r"t\.me/([A-Za-z0-9_]{5,64})", value)
-        if m:
-            value = f"@{m.group(1)}"
-        elif not value.startswith("@"):
-            value = f"@{value.lstrip('@')}"
-        # Validate through the same normalizer used for manual input
+        # Normalize handles t.me/c/ID, t.me/username, @username, numeric ID
         validated = _normalize_chat_ref_input(value)
         if not validated:
             await message.answer(
-                f"❌ <b>{value}</b> не похоже на валидный Telegram-чат.\n"
-                "Введите @username (минимум 5 символов) или числовой ID чата.",
+                f"❌ Не удалось распознать чат из: <b>{value}</b>\n"
+                "Поддерживаются: @username, t.me/username, t.me/c/ID/... или числовой ID.",
                 parse_mode="HTML",
             )
             return
