@@ -1,5 +1,6 @@
 """aiogram Telegram bot — control panel UI for tg-parsing."""
 
+import asyncio
 import json
 import logging
 import io
@@ -80,9 +81,12 @@ async def _resolve_chat_title(chat_ref: str) -> str | None:
     if not ub or not ub.client.is_connected():
         return None
     try:
-        entity = await ub.client.get_entity(int(chat_ref) if chat_ref.lstrip("-").isdigit() else chat_ref)
+        entity = await asyncio.wait_for(
+            ub.client.get_entity(int(chat_ref) if chat_ref.lstrip("-").isdigit() else chat_ref),
+            timeout=5.0,
+        )
         return getattr(entity, "title", None) or getattr(entity, "username", None)
-    except Exception as e:
+    except (asyncio.TimeoutError, Exception) as e:
         logger.debug("Could not resolve title for %s: %s", chat_ref, e)
         return None
 
@@ -325,7 +329,6 @@ async def _send_monitoring_screen(message, status_line: str = "", auto_restart: 
         await message.answer("🔄 Перезапускаю для применения изменений…")
         import os, signal
         # Small delay so the message is sent before process dies
-        import asyncio
         await asyncio.sleep(0.5)
         os.kill(os.getpid(), signal.SIGTERM)
 
