@@ -337,7 +337,13 @@ async def cb_chat_del(callback: CallbackQuery):
         await callback.answer("Список пуст", show_alert=True)
         return
     _bot_instance.awaiting[callback.from_user.id] = "chat_del"
-    lines = [f"  {i+1}. {c}" for i, c in enumerate(chats)]
+    lines = []
+    for i, c in enumerate(chats):
+        if c.lstrip("-").isdigit():
+            title = await _resolve_chat_title(c)
+            lines.append(f"  {i+1}. {_display_chat_ref(c, title)}")
+        else:
+            lines.append(f"  {i+1}. {c}")
     await callback.message.edit_text(
         "Введите номер чата для удаления:\n" + "\n".join(lines),
         reply_markup=back_kb("monitoring"),
@@ -1373,8 +1379,10 @@ async def handle_text_input(message: Message):
                 raise IndexError
             removed = _cfg().monitoring.chats.pop(idx)
             _save_config()
+            title = await _resolve_chat_title(removed)
+            display = _display_chat_ref(removed, title)
             await message.answer(
-                f"✅ Чат {removed} удалён.\n⚠️ Перезапустите бота для применения:",
+                f"✅ Чат {display} удалён.\n⚠️ Перезапустите бота для применения:",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🔄 Перезапустить", callback_data="restart_bot")],
                     [InlineKeyboardButton(text="◀️ В мониторинг", callback_data="monitoring")],
