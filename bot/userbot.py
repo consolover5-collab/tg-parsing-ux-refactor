@@ -42,7 +42,7 @@ class Userbot:
         self.dm_limiter = dm_limiter
         self.vision_limiter = vision_limiter
         self.db = db
-        self.notify = notify_callback  # async fn(text: str)
+        self.notify = notify_callback  # async fn(text: str, matched_keyword: str = "")
         self.matcher = KeywordMatcher(
             config.monitoring.keywords,
             keyword_map=config.rules.keyword_map,
@@ -431,7 +431,7 @@ class Userbot:
             forward_sent = False
 
             if actions["should_forward"]:
-                forward_sent = await self._forward_message(msg, meta)
+                forward_sent = await self._forward_message(msg, meta, matched_keyword=matched_value)
                 await self.db.log_action(
                     msg_uuid, "forward",
                     "success" if forward_sent else "failed",
@@ -519,7 +519,7 @@ class Userbot:
             logger.error("Failed to send DM to %d: %s", seller_id, e)
             return False
 
-    async def _forward_message(self, msg: Message, meta: dict) -> bool:
+    async def _forward_message(self, msg: Message, meta: dict, matched_keyword: str = "") -> bool:
         """Forward message to main bot or send notification."""
         notify_chat_id = self.config.actions.notify_chat_id
 
@@ -537,7 +537,7 @@ class Userbot:
                 # Send notification with metadata
                 notification_text = self.processor.format_notification(meta, self.config.actions.forward_mode)
                 if notification_text and self.notify:
-                    await self.notify(notification_text)
+                    await self.notify(notification_text, matched_keyword=matched_keyword)
                     logger.info("Notification sent")
                     return True
                 return False
@@ -573,7 +573,7 @@ class Userbot:
         text = "\n".join(parts)
 
         if self.notify:
-            await self.notify(text)
+            await self.notify(text, matched_keyword=matched_value)
 
     async def _notify_duplicate(self, chat, seller_id):
         text = (
@@ -582,7 +582,7 @@ class Userbot:
             f"ℹ️ DM уже отправлялся ранее"
         )
         if self.notify:
-            await self.notify(text)
+            await self.notify(text)  # no matched_keyword → only owner gets it
 
     # ── Validation ──────────────────────────────────────────────────
 

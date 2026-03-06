@@ -45,8 +45,15 @@ class RulesConfig(BaseModel):
     opt_out_list: list[int | str] = Field(default_factory=list)
 
 
+class ExtraRecipient(BaseModel):
+    user_id: int
+    name: str = ""
+    keywords: list[str] = Field(default_factory=list)  # empty = all keywords
+
+
 class ActionsConfig(BaseModel):
     notify_chat_id: str | int = "me"
+    extra_notify: list[ExtraRecipient] = Field(default_factory=list)
     auto_dm: bool = True
     forward_to_main_bot: bool = False
     forward_mode: ForwardMode = ForwardMode.NOTIFY_WITH_META

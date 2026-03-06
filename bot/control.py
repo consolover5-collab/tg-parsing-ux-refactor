@@ -644,12 +644,46 @@ async def cb_toggle_vision(callback: CallbackQuery):
 
 @router.callback_query(F.data == "set_notify")
 async def cb_set_notify(callback: CallbackQuery):
-    _bot_instance.awaiting[callback.from_user.id] = "set_notify"
+    extras = _cfg().actions.extra_notify
+    lines = ["🔔 <b>Получатели уведомлений</b>\n", "👤 Вы — все ключевые слова"]
+    buttons = []
+    if extras:
+        lines.append("\n<b>Дополнительные:</b>")
+        for i, r in enumerate(extras):
+            kw_str = ", ".join(r.keywords) if r.keywords else "все"
+            lines.append(f"{i+1}. {r.name or r.user_id} — {kw_str}")
+            buttons.append([InlineKeyboardButton(
+                text=f"❌ {r.name or r.user_id}", callback_data=f"del_recipient:{i}"
+            )])
+    buttons.append([InlineKeyboardButton(text="➕ Добавить получателя", callback_data="add_recipient")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="settings")])
     await callback.message.edit_text(
-        "Введите chat_id для уведомлений (или 'me' для себя):",
-        reply_markup=back_kb("settings"),
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode="HTML",
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "add_recipient")
+async def cb_add_recipient(callback: CallbackQuery):
+    _bot_instance.awaiting[callback.from_user.id] = "add_recipient_username"
+    await callback.message.edit_text(
+        "Введите @username или числовой user_id нового получателя:",
+        reply_markup=back_kb("set_notify"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("del_recipient:"))
+async def cb_del_recipient(callback: CallbackQuery):
+    idx = int(callback.data.split(":")[1])
+    extras = _cfg().actions.extra_notify
+    if 0 <= idx < len(extras):
+        removed = extras.pop(idx)
+        _save_config()
+        await callback.answer(f"Удалён: {removed.name or removed.user_id}", show_alert=True)
+    await cb_set_notify(callback)
 
 
 @router.callback_query(F.data == "restart_bot")
@@ -1063,7 +1097,8 @@ async def cb_help(callback: CallbackQuery):
         "• 📊 <b>Лимиты</b> — квоты DM/час, Vision/мин, NLP/мин\n"
         "• 👥 <b>Списки</b> — чёрный (не писать) и белый (игнор cooldown)\n"
         "  Принимают <code>@username</code> и числовой user_id\n"
-        "• 🔔 <b>Уведомления</b> — вкл/выкл оповещений о находках\n"
+        "• 🔔 <b>Уведомления</b> — добавить получателей по @username, "
+        "каждому можно выбрать ключевые слова\n"
         "• 🔐 <b>Авторизация</b> — привязка userbot по QR-коду\n"
         "• 🔄 <b>Перезапуск</b> — мягкий перезапуск сервиса\n\n"
 
@@ -1522,16 +1557,57 @@ async def handle_text_input(message: Message):
             await message.answer("❌ Введите число.")
         return
 
-    elif action == "set_notify":
-        if text.lower() == "me":
-            _cfg().actions.notify_chat_id = "me"
-        else:
+    elif action == "add_recipient_username":
+        # Resolve username to user_id via Telethon
+        username = text.strip().lstrip("@")
+        user_id = None
+        display_name = username
+        if username.isdigit():
+            user_id = int(username)
+            display_name = str(user_id)
+        elif _bot_instance.userbot and _bot_instance.userbot.client.is_connected():
             try:
-                _cfg().actions.notify_chat_id = int(text)
-            except ValueError:
-                _cfg().actions.notify_chat_id = text
+                entity = await _bot_instance.userbot.client.get_entity(username)
+                user_id = entity.id
+                display_name = getattr(entity, "first_name", "") or username
+            except Exception as e:
+                await message.answer(f"❌ Не удалось найти пользователя @{username}: {e}")
+                return
+        else:
+            await message.answer("❌ Userbot не подключён, введите числовой user_id.")
+            return
+        # Store pending and ask for keywords
+        _bot_instance.pending_kw[message.from_user.id] = {
+            "recipient_user_id": user_id,
+            "recipient_name": display_name,
+        }
+        _bot_instance.awaiting[message.from_user.id] = "add_recipient_keywords"
+        kw_list = ", ".join(_cfg().monitoring.keywords) or "(нет)"
+        await message.answer(
+            f"👤 {display_name} (ID: {user_id})\n\n"
+            f"Текущие ключевые слова: {kw_list}\n\n"
+            f"Введите ключевые слова через запятую (или «все» для всех):"
+        )
+        return
+
+    elif action == "add_recipient_keywords":
+        from bot.models import ExtraRecipient
+        pending = _bot_instance.pending_kw.pop(message.from_user.id, None)
+        if not pending:
+            await message.answer("❌ Ошибка, попробуйте заново.")
+            return
+        keywords = []
+        if text.strip().lower() != "все":
+            keywords = [k.strip() for k in text.split(",") if k.strip()]
+        recipient = ExtraRecipient(
+            user_id=pending["recipient_user_id"],
+            name=pending["recipient_name"],
+            keywords=keywords,
+        )
+        _cfg().actions.extra_notify.append(recipient)
         _save_config()
-        await message.answer(f"✅ Уведомления: {_cfg().actions.notify_chat_id}")
+        kw_str = ", ".join(keywords) if keywords else "все"
+        await message.answer(f"✅ Добавлен: {recipient.name} — {kw_str}")
         return
 
     elif action == "auth_code":
@@ -1834,22 +1910,34 @@ class ControlBot:
         global _bot_instance
         _bot_instance = self
 
-    async def send_notification(self, text: str):
-        """Send notification to the configured chat (or owner for 'me')."""
-        chat_id = self.config.actions.notify_chat_id
-        if chat_id == "me":
-            if self.owner_id:
-                try:
-                    await self.bot.send_message(chat_id=self.owner_id, text=text)
-                except Exception as e:
-                    logger.error("Failed to send notification to owner: %s", e)
-            else:
-                logger.info("Notification (owner unknown, send /start first): %s", text[:80])
-            return
-        try:
-            await self.bot.send_message(chat_id=int(chat_id), text=text)
-        except Exception as e:
-            logger.error("Failed to send notification: %s", e)
+    async def send_notification(self, text: str, matched_keyword: str = ""):
+        """Send notification to owner + extra recipients (filtered by keyword)."""
+        # Always send to owner
+        if self.owner_id:
+            try:
+                await self.bot.send_message(chat_id=self.owner_id, text=text)
+            except Exception as e:
+                logger.error("Failed to send notification to owner: %s", e)
+        else:
+            logger.info("Notification (owner unknown, send /start first): %s", text[:80])
+
+        # Send to extra recipients (with keyword filter)
+        if not matched_keyword:
+            return  # duplicates / system messages → only owner
+        kw_lower = matched_keyword.lower()
+        for r in self.config.actions.extra_notify:
+            if r.keywords and kw_lower not in [k.lower() for k in r.keywords]:
+                continue
+            try:
+                await self.bot.send_message(chat_id=r.user_id, text=text)
+            except Exception as e:
+                logger.error("Failed to send notification to %s (%s): %s", r.name or r.user_id, r.user_id, e)
+                # Fallback: try via Telethon userbot
+                if self.userbot and self.userbot.client.is_connected():
+                    try:
+                        await self.userbot.client.send_message(r.user_id, text)
+                    except Exception as e2:
+                        logger.error("Telethon fallback also failed for %s: %s", r.user_id, e2)
 
     async def start(self):
         logger.info("Control bot starting...")
