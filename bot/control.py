@@ -23,6 +23,15 @@ from db.database import Database
 logger = logging.getLogger(__name__)
 router = Router()
 
+
+@router.callback_query.outer_middleware()
+async def clear_awaiting_on_callback(handler, event: CallbackQuery, data: dict):
+    """Clear pending text-input state when user clicks any inline button."""
+    if _bot_instance and event.from_user:
+        _bot_instance.awaiting.pop(event.from_user.id, None)
+    return await handler(event, data)
+
+
 # Runtime references (set in ControlBot.setup)
 _bot_instance: "ControlBot | None" = None
 
