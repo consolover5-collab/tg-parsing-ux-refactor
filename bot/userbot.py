@@ -93,7 +93,9 @@ class Userbot:
         resolved_ids = []
         for chat in chats:
             try:
-                entity = await self.client.get_input_entity(chat)
+                # Convert numeric strings to int — Telethon needs int for channel IDs
+                chat_ref = int(chat) if isinstance(chat, str) and chat.lstrip("-").isdigit() else chat
+                entity = await self.client.get_input_entity(chat_ref)
                 resolved_ids.append(entity)
                 logger.debug("Resolved chat %s -> %s", chat, entity)
             except Exception as e:
