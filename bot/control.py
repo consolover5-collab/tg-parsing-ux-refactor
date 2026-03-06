@@ -642,10 +642,12 @@ async def cb_toggle_vision(callback: CallbackQuery):
     await cb_settings(callback)
 
 
-@router.callback_query(F.data == "set_notify")
-async def cb_set_notify(callback: CallbackQuery):
+def _build_notify_screen(status_line: str = "") -> tuple[str, InlineKeyboardMarkup]:
     extras = _cfg().actions.extra_notify
-    lines = ["🔔 <b>Получатели уведомлений</b>\n", "👤 Вы — все ключевые слова"]
+    lines = ["🔔 <b>Получатели уведомлений</b>\n"]
+    if status_line:
+        lines.append(status_line + "\n")
+    lines.append("👤 Вы — все ключевые слова")
     buttons = []
     if extras:
         lines.append("\n<b>Дополнительные:</b>")
@@ -657,11 +659,18 @@ async def cb_set_notify(callback: CallbackQuery):
             )])
     buttons.append([InlineKeyboardButton(text="➕ Добавить получателя", callback_data="add_recipient")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="settings")])
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        parse_mode="HTML",
-    )
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def _send_notify_screen(message, status_line: str = ""):
+    text, kb = _build_notify_screen(status_line)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "set_notify")
+async def cb_set_notify(callback: CallbackQuery):
+    text, kb = _build_notify_screen()
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
@@ -819,7 +828,7 @@ async def cb_toggle_pause(callback: CallbackQuery):
 # ── ✉️ Авто-DM ────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "autodm")
-async def cb_autodm(callback: CallbackQuery):
+def _build_autodm_screen(status_line: str = "") -> tuple[str, InlineKeyboardMarkup]:
     cfg = _cfg()
     auto_dm = "вкл" if cfg.actions.auto_dm else "выкл"
     dry_run_status = "вкл" if cfg.actions.dry_run else "выкл"
@@ -828,6 +837,8 @@ async def cb_autodm(callback: CallbackQuery):
     tpl = cfg.actions.dm_template[:60] + "…" if len(cfg.actions.dm_template) > 60 else cfg.actions.dm_template
 
     parts = [f"✉️ <b>Авто-DM</b>\n"]
+    if status_line:
+        parts.append(status_line + "\n")
     parts.append(f"Статус: {auto_dm}")
     if cfg.actions.dry_run:
         parts.append("⚠️ <b>Dry-run включён</b> — DM не отправляются")
@@ -850,8 +861,17 @@ async def cb_autodm(callback: CallbackQuery):
         buttons.append([InlineKeyboardButton(text=f"🤖 Groq DM: {groq_dm_status}", callback_data="toggle_groq_dm")])
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu")])
 
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await callback.message.edit_text("\n".join(parts), reply_markup=kb, parse_mode="HTML")
+    return "\n".join(parts), InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def _send_autodm_screen(message, status_line: str = ""):
+    text, kb = _build_autodm_screen(status_line)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+async def cb_autodm(callback: CallbackQuery):
+    text, kb = _build_autodm_screen()
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 # redirect old actions_menu to autodm
@@ -940,11 +960,13 @@ async def cb_edit_dm_template(callback: CallbackQuery):
 # ── 👥 Списки ─────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "lists")
-async def cb_lists(callback: CallbackQuery):
+def _build_lists_screen(status_line: str = "") -> tuple[str, InlineKeyboardMarkup]:
     opt_out = _cfg().rules.opt_out_list or []
     no_dedup = _cfg().actions.no_dedup_ids or []
 
     parts = ["👥 <b>Списки</b>\n"]
+    if status_line:
+        parts.append(status_line + "\n")
     if opt_out:
         lines = [f"  {i+1}. {uid}" for i, uid in enumerate(opt_out)]
         parts.append("🚫 <b>Чёрный список</b> (не писать DM):\n" + "\n".join(lines))
@@ -967,7 +989,17 @@ async def cb_lists(callback: CallbackQuery):
         ],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="settings")],
     ])
-    await callback.message.edit_text("\n".join(parts), reply_markup=kb, parse_mode="HTML")
+    return "\n".join(parts), kb
+
+
+async def _send_lists_screen(message, status_line: str = ""):
+    text, kb = _build_lists_screen(status_line)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+async def cb_lists(callback: CallbackQuery):
+    text, kb = _build_lists_screen()
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 # redirect old callbacks
@@ -1115,7 +1147,7 @@ async def cb_help(callback: CallbackQuery):
 # ── Limits ─────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "limits")
-async def cb_limits(callback: CallbackQuery):
+def _build_limits_screen(status_line: str = "") -> tuple[str, InlineKeyboardMarkup]:
     from bot.vision import _groq_rate_info
 
     cfg = _cfg()
@@ -1147,7 +1179,10 @@ async def cb_limits(callback: CallbackQuery):
     else:
         groq_lines = "\n🌐 <b>Groq API</b>: нет данных (Vision ещё не вызывался)"
 
-    text = f"📊 <b>Лимиты</b>\n\n{dm_line}"
+    parts = [f"📊 <b>Лимиты</b>\n"]
+    if status_line:
+        parts.append(status_line + "\n")
+    parts.append(dm_line)
 
     buttons = [
         [InlineKeyboardButton(
@@ -1157,7 +1192,7 @@ async def cb_limits(callback: CallbackQuery):
     ]
 
     if _has_groq():
-        text += f"\n{vis_line}{groq_lines}"
+        parts.append(f"{vis_line}{groq_lines}")
         buttons.append(
             [InlineKeyboardButton(
                 text=f"👁 Vision/мин: {cfg.rate_limits.vision_per_minute}",
@@ -1172,12 +1207,17 @@ async def cb_limits(callback: CallbackQuery):
         )
 
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="settings")])
+    return "\n".join(parts), InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    await callback.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        parse_mode="HTML",
-    )
+
+async def _send_limits_screen(message, status_line: str = ""):
+    text, kb = _build_limits_screen(status_line)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+async def cb_limits(callback: CallbackQuery):
+    text, kb = _build_limits_screen()
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
@@ -1607,7 +1647,7 @@ async def handle_text_input(message: Message):
         _cfg().actions.extra_notify.append(recipient)
         _save_config()
         kw_str = ", ".join(keywords) if keywords else "все"
-        await message.answer(f"✅ Добавлен: {recipient.name} — {kw_str}")
+        await _send_notify_screen(message, f"✅ Добавлен: {recipient.name} — {kw_str}")
         return
 
     elif action == "auth_code":
@@ -1618,9 +1658,9 @@ async def handle_text_input(message: Message):
             if result == "ok":
                 started = await _bot_instance.userbot.start()
                 if started:
-                    await message.answer("✅ Авторизация успешна, мониторинг запущен.")
+                    await message.answer("✅ Авторизация успешна, мониторинг запущен.", reply_markup=back_kb("settings"))
                 else:
-                    await message.answer("✅ Авторизация успешна, но userbot не запущен.")
+                    await message.answer("✅ Авторизация успешна, но userbot не запущен.", reply_markup=back_kb("settings"))
             elif result == "need_2fa":
                 _bot_instance.awaiting[message.from_user.id] = "auth_2fa"
                 await message.answer("🔐 Введите пароль 2FA:")
@@ -1636,9 +1676,9 @@ async def handle_text_input(message: Message):
                     await message.answer("⌛ Код истёк. Отправил новый, введите его:")
                     return
                 except Exception:
-                    await message.answer("❌ Код истёк и не удалось запросить новый.")
+                    await message.answer("❌ Код истёк и не удалось запросить новый.", reply_markup=back_kb("settings"))
             else:
-                await message.answer("❌ Не удалось авторизоваться по коду.")
+                await message.answer("❌ Не удалось авторизоваться по коду.", reply_markup=back_kb("settings"))
 
     elif action == "auth_2fa":
         # 2FA password input is no longer accepted for security
@@ -1649,6 +1689,7 @@ async def handle_text_input(message: Message):
             "2. Отключите пароль 2FA\n"
             "3. Нажмите «🔐 Авторизация» ещё раз\n"
             "4. После успешной авторизации включите 2FA обратно",
+            reply_markup=back_kb("settings"),
             parse_mode="HTML",
         )
 
@@ -1663,14 +1704,16 @@ async def handle_text_input(message: Message):
         price = ep(text)
         if kw:
             resolved = matcher.resolve_key(kw) or kw
-            await message.answer(f"🧪 Результат:\n🏷 Keyword: {resolved}\n💰 Цена: {price or '—'}")
+            await message.answer(f"🧪 Результат:\n🏷 Keyword: {resolved}\n💰 Цена: {price or '—'}",
+                                 reply_markup=back_kb("history"))
         else:
-            await message.answer("🧪 Результат: совпадений по тексту нет.")
+            await message.answer("🧪 Результат: совпадений по тексту нет.",
+                                 reply_markup=back_kb("history"))
 
     elif action == "edit_dm_template":
         _cfg().actions.dm_template = text
         _save_config()
-        await message.answer(f"✅ Шаблон DM обновлён:\n{text}")
+        await _send_autodm_screen(message, f"✅ Шаблон обновлён")
         return
 
     elif action == "opt_out_add":
@@ -1679,18 +1722,18 @@ async def handle_text_input(message: Message):
             if entry not in _cfg().rules.opt_out_list:
                 _cfg().rules.opt_out_list.append(entry)
                 _save_config()
-                await message.answer(f"✅ {entry} добавлен в чёрный список")
+                await _send_lists_screen(message, f"✅ {entry} добавлен в ЧС")
             else:
-                await message.answer(f"⚠️ {entry} уже в списке")
+                await _send_lists_screen(message, f"⚠️ {entry} уже в списке")
         else:
             try:
                 user_id = int(entry)
                 if user_id not in _cfg().rules.opt_out_list:
                     _cfg().rules.opt_out_list.append(user_id)
                     _save_config()
-                    await message.answer(f"✅ User {user_id} добавлен в чёрный список")
+                    await _send_lists_screen(message, f"✅ {user_id} добавлен в ЧС")
                 else:
-                    await message.answer(f"⚠️ User {user_id} уже в списке")
+                    await _send_lists_screen(message, f"⚠️ {user_id} уже в списке")
             except ValueError:
                 await message.answer("❌ Введите user_id (число) или @username")
         return
@@ -1702,7 +1745,7 @@ async def handle_text_input(message: Message):
                 raise IndexError
             removed = _cfg().rules.opt_out_list.pop(idx)
             _save_config()
-            await message.answer(f"✅ {removed} удалён из чёрного списка")
+            await _send_lists_screen(message, f"✅ {removed} удалён из ЧС")
         except (ValueError, IndexError):
             await message.answer("❌ Неверный номер.")
         return
@@ -1716,7 +1759,7 @@ async def handle_text_input(message: Message):
             _cfg().actions.dm_delay_min = mn
             _cfg().actions.dm_delay_max = mx
             _save_config()
-            await message.answer(f"✅ Задержка: {mn}–{mx} с")
+            await _send_autodm_screen(message, f"✅ Задержка: {mn}–{mx} с")
         except (ValueError, IndexError):
             await message.answer("❌ Формат: МИН МАКС (числа, например: 60 120)")
         return
@@ -1728,8 +1771,8 @@ async def handle_text_input(message: Message):
                 raise ValueError
             _cfg().actions.dm_cooldown_hours = hours
             _save_config()
-            label = f"{hours} ч" if hours > 0 else "никогда не повторять"
-            await message.answer(f"✅ Повтор DM через: {label}")
+            label = f"{hours} ч" if hours > 0 else "никогда"
+            await _send_autodm_screen(message, f"✅ Повтор DM: {label}")
         except ValueError:
             await message.answer("❌ Введите целое число часов (0 = никогда)")
         return
@@ -1741,9 +1784,9 @@ async def handle_text_input(message: Message):
             if entry not in ids:
                 ids.append(entry)
                 _save_config()
-                await message.answer(f"✅ {entry} добавлен в белый список")
+                await _send_lists_screen(message, f"✅ {entry} добавлен в БС")
             else:
-                await message.answer(f"⚠️ {entry} уже в списке")
+                await _send_lists_screen(message, f"⚠️ {entry} уже в списке")
         else:
             try:
                 user_id = int(entry)
@@ -1751,9 +1794,9 @@ async def handle_text_input(message: Message):
                 if user_id not in ids:
                     ids.append(user_id)
                     _save_config()
-                    await message.answer(f"✅ User {user_id} добавлен в белый список")
+                    await _send_lists_screen(message, f"✅ {user_id} добавлен в БС")
                 else:
-                    await message.answer(f"⚠️ User {user_id} уже в списке")
+                    await _send_lists_screen(message, f"⚠️ {user_id} уже в списке")
             except ValueError:
                 await message.answer("❌ Введите user_id (число) или @username")
         return
@@ -1765,7 +1808,7 @@ async def handle_text_input(message: Message):
                 raise IndexError
             removed = _cfg().actions.no_dedup_ids.pop(idx)
             _save_config()
-            await message.answer(f"✅ {removed} удалён из белого списка")
+            await _send_lists_screen(message, f"✅ {removed} удалён из БС")
         except (ValueError, IndexError):
             await message.answer("❌ Неверный номер.")
         return
@@ -1806,7 +1849,7 @@ async def handle_text_input(message: Message):
                 raise ValueError
             _cfg().rate_limits.dm_per_hour = val
             _save_config()
-            await message.answer(f"✅ Лимит DM: {val}/час")
+            await _send_limits_screen(message, f"✅ Лимит DM: {val}/час")
         except ValueError:
             await message.answer("❌ Введите положительное число")
         return
@@ -1818,7 +1861,7 @@ async def handle_text_input(message: Message):
                 raise ValueError
             _cfg().rate_limits.vision_per_minute = val
             _save_config()
-            await message.answer(f"✅ Лимит Vision: {val}/мин")
+            await _send_limits_screen(message, f"✅ Лимит Vision: {val}/мин")
         except ValueError:
             await message.answer("❌ Введите положительное число")
         return
@@ -1830,7 +1873,7 @@ async def handle_text_input(message: Message):
                 raise ValueError
             _cfg().monitoring.text_nlp_per_minute = val
             _save_config()
-            await message.answer(f"✅ Лимит NLP: {val}/мин")
+            await _send_limits_screen(message, f"✅ Лимит NLP: {val}/мин")
         except ValueError:
             await message.answer("❌ Введите положительное число")
         return
