@@ -827,7 +827,6 @@ async def cb_toggle_pause(callback: CallbackQuery):
 
 # ── ✉️ Авто-DM ────────────────────────────────────────────────────
 
-@router.callback_query(F.data == "autodm")
 def _build_autodm_screen(status_line: str = "") -> tuple[str, InlineKeyboardMarkup]:
     cfg = _cfg()
     auto_dm = "вкл" if cfg.actions.auto_dm else "выкл"
@@ -869,6 +868,7 @@ async def _send_autodm_screen(message, status_line: str = ""):
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
+@router.callback_query(F.data == "autodm")
 async def cb_autodm(callback: CallbackQuery):
     text, kb = _build_autodm_screen()
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -959,7 +959,6 @@ async def cb_edit_dm_template(callback: CallbackQuery):
 
 # ── 👥 Списки ─────────────────────────────────────────────────────
 
-@router.callback_query(F.data == "lists")
 def _build_lists_screen(status_line: str = "") -> tuple[str, InlineKeyboardMarkup]:
     opt_out = _cfg().rules.opt_out_list or []
     no_dedup = _cfg().actions.no_dedup_ids or []
@@ -997,6 +996,7 @@ async def _send_lists_screen(message, status_line: str = ""):
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
+@router.callback_query(F.data == "lists")
 async def cb_lists(callback: CallbackQuery):
     text, kb = _build_lists_screen()
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -1146,7 +1146,6 @@ async def cb_help(callback: CallbackQuery):
 
 # ── Limits ─────────────────────────────────────────────────────────
 
-@router.callback_query(F.data == "limits")
 def _build_limits_screen(status_line: str = "") -> tuple[str, InlineKeyboardMarkup]:
     from bot.vision import _groq_rate_info
 
@@ -1215,6 +1214,7 @@ async def _send_limits_screen(message, status_line: str = ""):
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
+@router.callback_query(F.data == "limits")
 async def cb_limits(callback: CallbackQuery):
     text, kb = _build_limits_screen()
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
